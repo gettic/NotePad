@@ -3,11 +3,14 @@ local _, NP = ...
 
 local MIN_W, MIN_H = 260, 180
 local MAX_W, MAX_H = 1200, 900
-local TAB_H = 26 -- room for the tab row above the text box
+local TITLE_BAR_H = 24       -- double-click area at the top of the window
+local DOUBLE_CLICK_TIME = 0.3
+local FOLDED_LAYOUT = "TooltipDefaultLayout" -- Blizzard NineSlice layout of the folded bar (drawn inside the rect)
 
 local frame, editBox
 local modernBox, classicScroll -- whichever editor was built
 local grip, minButton
+local lastTitleClick -- GetTime() of the last single click on the title bar
 
 local function TemplateExists(name)
     if C_XMLUtil and C_XMLUtil.GetTemplateInfo then
@@ -15,6 +18,7 @@ local function TemplateExists(name)
     end
     return true -- can't tell; pcall around CreateFrame catches a miss
 end
+NP.TemplateExists = TemplateExists
 
 local function TryCreateFrame(frameType, name, parent, template)
     if not TemplateExists(template) then return nil end
@@ -89,6 +93,12 @@ local function SetupEditBoxScripts(eb)
         end
     end)
     eb:HookScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    -- Ctrl+Tab / Ctrl+Shift+Tab: next / previous note (only while typing here)
+    eb:HookScript("OnTabPressed", function()
+        if IsControlKeyDown() and NP.CycleNote then
+            NP.CycleNote(IsShiftKeyDown() and -1 or 1)
+        end
+    end)
 end
 
 -- Preferred: Blizzard's ScrollingEditBoxTemplate + MinimalScrollBar.
@@ -201,40 +211,48 @@ end
 -- Simple dark title-bar look while folded (the metal border / dialog border
 -- has fixed-size corners that overlap when the frame is this short).
 local FOLDED_BACKDROP = {
-    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    bgFile = NP.Art.tooltipBg,
+    edgeFile = NP.Art.tooltipBorder,
     tile = true, tileSize = 16, edgeSize = 14,
     insets = { left = 3, right = 3, top = 3, bottom = 3 },
 }
 
--- Styled window: how far the plain folded bar reaches past the frame edges.
-local FOLD_PAD_LEFT, FOLD_PAD_TOP, FOLD_PAD_RIGHT = 2, 4, 5
-
 local function ColorFolded(f)
     if f.SetBackdropColor then
-        f:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
-        f:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+        f:SetBackdropColor(unpack(NP.Color.barBg))
+        f:SetBackdropBorderColor(unpack(NP.Color.barBorder))
     end
 end
 
+-- The folded bar is exactly the frame's rectangle. Preferred look: Blizzard's
+-- NineSlice tooltip layout (no corner offsets, so it stays inside the rect);
+-- else a tooltip-style backdrop; else a plain dark texture.
 local function CreateFoldedBg(f)
-    local bg = TryCreateFrame("Frame", nil, f, "BackdropTemplate")
-    if bg and bg.SetBackdrop then
-        bg:SetBackdrop(FOLDED_BACKDROP)
-        ColorFolded(bg)
+    local bar = TryCreateFrame("Frame", nil, f, "NineSlicePanelTemplate")
+    local ok = bar and NineSliceUtil and NineSliceUtil.ApplyLayoutByName
+        and bar.SetCenterColor and bar.SetBorderColor
+        and pcall(NineSliceUtil.ApplyLayoutByName, bar, FOLDED_LAYOUT)
+    if ok then
+        bar:SetCenterColor(unpack(NP.Color.barBg))
+        bar:SetBorderColor(unpack(NP.Color.barBorder))
+        bar.NPNineSlice = true
     else
-        bg = CreateFrame("Frame", nil, f)
-        local tex = bg:CreateTexture(nil, "BACKGROUND")
-        tex:SetAllPoints()
-        tex:SetColorTexture(0.05, 0.05, 0.05, 0.95)
+        if bar then bar:Hide() end
+        bar = TryCreateFrame("Frame", nil, f, "BackdropTemplate")
+        if bar and bar.SetBackdrop then
+            bar:SetBackdrop(FOLDED_BACKDROP)
+            ColorFolded(bar)
+        else
+            bar = CreateFrame("Frame", nil, f)
+            local tex = bar:CreateTexture(nil, "BACKGROUND")
+            tex:SetAllPoints()
+            tex:SetColorTexture(unpack(NP.Color.barBg))
+        end
     end
-    -- reaches past the frame like the metal border did, around the buttons
-    local pad = f.NPFoldPad
-    bg:SetPoint("TOPLEFT", f, "TOPLEFT", -pad.left, pad.top)
-    bg:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", pad.right, 0)
-    bg:SetFrameLevel(f:GetFrameLevel()) -- below the title and buttons
-    bg:Hide()
-    return bg
+    bar:SetAllPoints(f)
+    bar:SetFrameLevel(f:GetFrameLevel()) -- below the title and buttons
+    bar:Hide()
+    return bar
 end
 
 -- Folding never moves the frame, the buttons or the title. The frame gets just
@@ -277,30 +295,7 @@ local function FoldedHeight()
     return math.ceil(bottom + FOLD_MARGIN)
 end
 
--- While folded the plain bar reaches past the frame (NPFoldPad); widen the
--- screen clamp by the same amount so the bar can't go off-screen.
--- SetClampRectInsets: negative left / positive right / positive top extend the clamp area.
-local function SetFoldClamp(on)
-    if not frame.SetClampRectInsets then return end
-    if on then
-        if frame.NPClampSaved then return end
-        local l, r, t, b = 0, 0, 0, 0
-        if frame.GetClampRectInsets then l, r, t, b = frame:GetClampRectInsets() end
-        frame.NPClampSaved = { l or 0, r or 0, t or 0, b or 0 }
-        local pad = frame.NPFoldPad
-        if pad then
-            local s = frame.NPClampSaved
-            frame:SetClampRectInsets(s[1] - pad.left, s[2] + pad.right, s[3] + pad.top, s[4])
-        end
-    elseif frame.NPClampSaved then
-        local s = frame.NPClampSaved
-        frame.NPClampSaved = nil
-        frame:SetClampRectInsets(s[1], s[2], s[3], s[4])
-    end
-end
-
 local function SetFoldedLook(on)
-    SetFoldClamp(on)
     if frame.NPFoldedBg then -- styled frame: swap the metal border for the plain bar
         for _, part in ipairs(frame.NPBorderParts) do part:SetShown(not on) end
         frame.NPFoldedBg:SetShown(on)
@@ -310,8 +305,8 @@ local function SetFoldedLook(on)
             ColorFolded(frame)
         else
             frame:SetBackdrop(frame.NPDialogBackdrop)
-            frame:SetBackdropColor(1, 1, 1, 1)
-            frame:SetBackdropBorderColor(1, 1, 1, 1)
+            frame:SetBackdropColor(unpack(NP.Color.white))
+            frame:SetBackdropBorderColor(unpack(NP.Color.white))
         end
     end
 end
@@ -324,7 +319,7 @@ local function ApplyMinimized(on)
             editBox:ClearFocus()
             NP.SaveText()
         end
-        if NP.CancelRename then NP.CancelRename() end
+        if NP.FinishRename then NP.FinishRename(true) end
         inset:Hide()
         if NP.tabRow then NP.tabRow:Hide() end
         if grip then grip:Hide() end
@@ -370,8 +365,8 @@ end
 local function CreateFallbackFrame()
     local f = CreateFrame("Frame", "NotePadFrame", UIParent, "BackdropTemplate")
     f.NPDialogBackdrop = BACKDROP_DIALOG_32_32 or {
-        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        bgFile = NP.Art.dialogBg,
+        edgeFile = NP.Art.dialogBorder,
         tile = true, tileSize = 32, edgeSize = 32,
         insets = { left = 11, right = 12, top = 12, bottom = 11 },
     }
@@ -410,22 +405,19 @@ local function CreateStyledFrame()
             f.NPBorderParts[#f.NPBorderParts + 1] = part
         end
     end
-    -- How far the folded bar reaches past the frame: the close button sits on the
-    -- top edge (TOPRIGHT +1, 0), so 4 px above it and 4 px right of it; 2 px on the left.
-    f.NPFoldPad = { left = FOLD_PAD_LEFT, top = FOLD_PAD_TOP, right = FOLD_PAD_RIGHT }
     f.NPFoldedBg = CreateFoldedBg(f)
     return f
 end
 
 -- Make room for the tab row between the title bar and the inset: the styled
 -- frame's inset already starts 60 px down (enough room); the fallback one needs moving.
-local function MakeRoomForTabs(f, inset)
+local function MakeRoomForTabs(f, inset, needed)
     local titleH = f.NPTitleH or 24
     for i = 1, inset:GetNumPoints() do
         local p, rel, rp, x, y = inset:GetPoint(i)
         if p == "TOPLEFT" or p == "TOP" or p == "TOPRIGHT" then
             local gap = -(y or 0) - titleH
-            local shift = math.max(0, TAB_H - gap)
+            local shift = math.max(0, needed - gap)
             if shift > 0 then inset:SetPoint(p, rel, rp, x, y - shift) end
         end
     end
@@ -436,9 +428,9 @@ local function CreateResizeGrip(f)
     g:SetSize(16, 16)
     g:SetPoint("BOTTOMRIGHT", -4, 4)
     g:SetFrameLevel(f:GetFrameLevel() + 10)
-    g:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-    g:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-    g:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    g:SetNormalTexture(NP.Art.gripUp)
+    g:SetPushedTexture(NP.Art.gripDown)
+    g:SetHighlightTexture(NP.Art.gripHighlight)
     g:SetScript("OnMouseDown", function(_, button)
         if button == "LeftButton" then f:StartSizing("BOTTOMRIGHT") end
     end)
@@ -476,12 +468,11 @@ local function CreateMinimizeButton(f)
     else
         b:SetPoint("TOPRIGHT", -36, -6)
     end
-    b:SetHighlightTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight", "ADD")
+    b:SetHighlightTexture(NP.Art.minimizeHighlight, "ADD")
     b:SetScript("OnClick", function() NP.SetMinimized(not NP.db.window.minimized) end)
     function b:UpdateLook(on)
-        local state = on and "BiggerButton" or "SmallerButton"
-        self:SetNormalTexture("Interface\\Buttons\\UI-Panel-" .. state .. "-Up")
-        self:SetPushedTexture("Interface\\Buttons\\UI-Panel-" .. state .. "-Down")
+        self:SetNormalTexture(on and NP.Art.biggerUp or NP.Art.smallerUp)
+        self:SetPushedTexture(on and NP.Art.biggerDown or NP.Art.smallerDown)
     end
     b:UpdateLook(false)
     return b
@@ -500,15 +491,36 @@ function NP.CreateWindow()
     frame:SetResizeBounds(MIN_W, MIN_H, MAX_W, MAX_H)
 
     frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    frame:SetScript("OnDragStart", function(self)
+        self.NPDragged = true -- this press is a drag, not a click
+        self:StartMoving()
+    end)
     frame:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         if self.SetUserPlaced then self:SetUserPlaced(false) end
         SavePosition()
     end)
+    -- Double-click on the title bar folds / unfolds (frames have no OnDoubleClick).
+    frame:HookScript("OnMouseDown", function(self, button)
+        if button == "LeftButton" then self.NPDragged = false end
+    end)
+    frame:HookScript("OnMouseUp", function(self, button)
+        if button ~= "LeftButton" then return end
+        if self.NPDragged or not NP.IsCursorOnTitleBar() then
+            lastTitleClick = nil
+            return
+        end
+        local now = GetTime()
+        if lastTitleClick and now - lastTitleClick <= DOUBLE_CLICK_TIME then
+            lastTitleClick = nil
+            NP.SetMinimized(not NP.db.window.minimized)
+        else
+            lastTitleClick = now
+        end
+    end)
     frame:HookScript("OnHide", function(self)
         self:StopMovingOrSizing()
-        if NP.CancelRename then NP.CancelRename() end
+        if NP.FinishRename then NP.FinishRename(true) end
         if editBox then
             editBox:ClearFocus()
             NP.SaveText()
@@ -516,7 +528,8 @@ function NP.CreateWindow()
     end)
 
     local inset = frame.NPInset
-    MakeRoomForTabs(frame, inset)
+    local tabRowH = NP.TabRowHeight and NP.TabRowHeight() or 24
+    MakeRoomForTabs(frame, inset, tabRowH + 2)
 
     -- Clicking empty space inside the text area puts the cursor at the end.
     local catcher = CreateFrame("Button", nil, inset)
@@ -538,7 +551,7 @@ function NP.CreateWindow()
     editBox = eb
 
     if NP.CreateTabs then
-        NP.CreateTabs(frame, inset, TAB_H - 2)
+        NP.CreateTabs(frame, inset, tabRowH)
     end
 
     grip = CreateResizeGrip(frame)
@@ -551,7 +564,40 @@ function NP.CreateWindow()
     tinsert(UISpecialFrames, "NotePadFrame")
 end
 
+-- Is the cursor in the top TITLE_BAR_H px of the window?
+function NP.IsCursorOnTitleBar()
+    if not frame then return false end
+    local top = frame:GetTop()
+    if not top then return false end
+    local _, y = GetCursorPosition()
+    y = y / frame:GetEffectiveScale()
+    return y <= top and y >= top - TITLE_BAR_H
+end
+
+-- Show the window unfolded.
+function NP.OpenWindow()
+    if not frame then return end
+    frame:Show()
+    if NP.db.window.minimized then NP.SetMinimized(false) end
+end
+
+-- /np and minimap left-click: closed -> open unfolded; open but folded -> unfold; open -> close.
 function NP.ToggleWindow()
     if not frame then return end
-    if frame:IsShown() then frame:Hide() else frame:Show() end
+    if not frame:IsShown() or NP.db.window.minimized then
+        NP.OpenWindow()
+    else
+        frame:Hide()
+    end
+end
+
+-- Minimap right-click: closed -> open folded; open -> fold / unfold.
+function NP.ToggleFold()
+    if not frame then return end
+    if not frame:IsShown() then
+        frame:Show()
+        if not NP.db.window.minimized then NP.SetMinimized(true) end
+        return
+    end
+    NP.SetMinimized(not NP.db.window.minimized)
 end

@@ -2,7 +2,7 @@
 
 A simple addon for **WoW Forever** to take notes. It opens a window with tabs, one note per tab. Whatever you type is saved, and all your characters on the account see the same notes.
 
-Version 0.0.2 (beta). This is a test version and has not been fully tested in the game yet. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
+Version 0.0.3 (beta). This is a test version and has not been fully tested in the game yet. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
 
 - [Install](#install)
 - [Open and close](#open-and-close)
@@ -23,8 +23,8 @@ Version 0.0.2 (beta). This is a test version and has not been fully tested in th
 
 | How | What it does |
 |---|---|
-| `/np` or `/notepad` | Opens or closes the window |
-| Minimap button | Click to open or close |
+| `/np` or `/notepad` | Opens the window unfolded, or closes it |
+| Minimap button | Left-click to open (unfolded) or close |
 | The minimap's addon menu | Click Note Pad to open or close |
 | The X at the top right | Closes the window |
 | Esc | Closes the window (when you are not typing) |
@@ -49,10 +49,14 @@ Each note has its own tab.
 | Red `[+]` button | Adds a new note (up to 20) |
 | Double-click a tab | Renames the note |
 | Right-click a tab | Menu: Rename, Move left, Move right, Delete |
+| Hover over a tab | Shows the first line of the note |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous note (works while typing) |
 
+- The tabs and page arrows look like the game's own.
 - Names can be up to 24 letters. A tab shows the whole name.
-- When there are more tabs than fit, arrows `<` `>` appear. Click them, or use the mouse wheel on the tab row, to scroll.
-- Deleting a note always asks "Are you sure?" first, also when the note is empty.
+- While renaming, click away to save the new name. Esc cancels.
+- When there are more tabs than fit, arrows appear. Click them, or use the mouse wheel on the tab row, to scroll.
+- Deleting a note always asks "Are you sure?" first, also when the note is empty. The note's name is shown in gold.
 - The last note can't be deleted.
 - If you used version 0.0.1, your old note is now the first tab. Nothing is lost.
 
@@ -60,13 +64,15 @@ Each note has its own tab.
 
 - Drag the window by its title bar or edge to move it.
 - Drag the corner at the bottom right to change its size (from 260 x 180 up to 1200 x 900).
-- The minimize button, next to the X, folds the window down to a clean dark title bar. Click it again to unfold.
+- The minimize button, next to the X, folds the window down to a dark title bar as wide as the window. Click it again to unfold.
+- You can also fold and unfold by double-clicking the title bar, or by right-clicking the minimap button.
 - The window's place, size and folded state are remembered, also after `/reload`.
 - `/np reset` puts the window back in the middle of the screen at its normal size, and unfolds it.
 
 ## Minimap button
 
-- Click: opens or closes the window.
+- Left-click: opens the window unfolded, or closes it.
+- Right-click: folds or unfolds the window. If it is closed, it opens folded.
 - Drag: moves the button around the minimap. Its place is remembered.
 - `/np minimap` hides the button. Type it again to show it.
 
@@ -76,7 +82,9 @@ Type `/np` or `/notepad`, followed by:
 
 | Command | What it does |
 |---|---|
-| (nothing) | Opens or closes the window |
+| (nothing) | Opens the window unfolded, or closes it |
+| `new` | Opens the window and adds a new note |
+| a number, e.g. `2` | Opens the window on that note |
 | `reset` | Moves the window back to the middle, to its normal size, and unfolds it |
 | `minimap` | Hides or shows the minimap button |
 | `help` | Lists the commands |

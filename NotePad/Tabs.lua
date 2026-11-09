@@ -2,8 +2,13 @@
 local _, NP = ...
 
 local TAB_MIN_W, TAB_PAD, GAP = 50, 20, 2
-local PLUS_W, ARROW_W = 32, 18 -- [+] a bit wider than square: the red button art is drawn wide
+local PLUS_W = 32            -- [+] a bit wider than square: the red button art is drawn wide
+local ART_ARROW_W, TEXT_ARROW_W = 24, 18
+local BLIZZ_TAB_H, BOX_TAB_H = 32, 24
 local MAX_TITLE = 24
+local TOOLTIP_CHARS = 40     -- first line of the note shown in the tab tooltip
+local TAB_TEMPLATE = "PanelTopTabButtonTemplate"
+local TAB_PARTS = { "Text", "Left", "Middle", "Right", "LeftActive", "MiddleActive", "RightActive" }
 
 local row, plusBtn, leftBtn, rightBtn, renameBox
 local tabs = {}      -- tab buttons, reused
@@ -12,8 +17,8 @@ local renaming       -- note table being renamed
 local pendingDelete  -- note table waiting for the delete popup
 
 local BACKDROP = {
-    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    bgFile = NP.Art.tooltipBg,
+    edgeFile = NP.Art.tooltipBorder,
     tile = true, tileSize = 16, edgeSize = 12,
     insets = { left = 3, right = 3, top = 3, bottom = 3 },
 }
@@ -30,30 +35,41 @@ local function IndexOf(note)
     end
 end
 
+-- Height of the tab row: Blizzard's top tabs are 32 px, our own boxes 24 px.
+function NP.TabRowHeight()
+    if PanelTemplates_TabResize and NP.TemplateExists(TAB_TEMPLATE) then return BLIZZ_TAB_H end
+    return BOX_TAB_H
+end
+
 -- Look -------------------------------------------------------------------------
 
+-- Own box look (fallback tabs, text arrows).
 local function Style(b, selected, dimmed)
+    local C = NP.Color
     if b.SetBackdropColor then
-        if selected then
-            b:SetBackdropColor(0.25, 0.2, 0.05, 0.95)
-            b:SetBackdropBorderColor(1, 0.82, 0, 1)
-        else
-            b:SetBackdropColor(0.06, 0.06, 0.06, 0.9)
-            b:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
-        end
+        b:SetBackdropColor(unpack(selected and C.tabSelBg or C.tabBg))
+        b:SetBackdropBorderColor(unpack(selected and C.gold or C.tabBorder))
     elseif b.NPBg then
-        if selected then
-            b.NPBg:SetColorTexture(0.35, 0.28, 0.05, 0.95)
-        else
-            b.NPBg:SetColorTexture(0.1, 0.1, 0.1, 0.9)
-        end
+        b.NPBg:SetColorTexture(unpack(selected and C.tabPlainSel or C.tabPlainBg))
     end
-    if selected then
-        b.NPText:SetTextColor(1, 0.82, 0)
-    else
-        b.NPText:SetTextColor(0.85, 0.85, 0.85)
-    end
+    b.NPText:SetTextColor(unpack(selected and C.gold or C.tabText))
     b:SetAlpha(dimmed and 0.4 or 1)
+end
+
+-- Blizzard tab look without PanelTemplates_SelectTab: that one calls Disable(),
+-- which would block double-click rename and the right-click menu on the open tab.
+local function SetBlizzTabSelected(t, on)
+    t.Left:SetShown(not on)
+    t.Middle:SetShown(not on)
+    t.Right:SetShown(not on)
+    t.LeftActive:SetShown(on)
+    t.MiddleActive:SetShown(on)
+    t.RightActive:SetShown(on)
+    t:SetNormalFontObject(on and GameFontHighlightSmall or GameFontNormalSmall)
+end
+
+local function SetTabSelected(t, on)
+    if t.NPBlizz then SetBlizzTabSelected(t, on) else Style(t, on) end
 end
 
 local function MakeButton(parent, label)
@@ -67,9 +83,9 @@ local function MakeButton(parent, label)
     end
     local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     if label then
-        fs:SetPoint("CENTER") -- small fixed buttons: + < >
+        fs:SetPoint("CENTER") -- small fixed buttons: < >
     else
-        fs:SetPoint("LEFT", 6, 0) -- tabs: long names end in "..."
+        fs:SetPoint("LEFT", 6, 0) -- tabs: names that don't fit end in "..."
         fs:SetPoint("RIGHT", -6, 0)
     end
     fs:SetWordWrap(false)
@@ -79,57 +95,91 @@ local function MakeButton(parent, label)
     local hl = b:CreateTexture(nil, "HIGHLIGHT")
     hl:SetPoint("TOPLEFT", 3, -3)
     hl:SetPoint("BOTTOMRIGHT", -3, 3)
-    hl:SetColorTexture(1, 1, 1, 0.08)
+    hl:SetColorTexture(unpack(NP.Color.hover))
     Style(b, false)
     return b
 end
 
--- [+]: Blizzard's red panel button (UIPanelButtonTemplate); else the same art
--- by file (UI-Panel-Button-Up/Down/Highlight); else a plain red button.
-local RED_ART = "Interface\\Buttons\\UI-Panel-Button-"
-
-local function ArtTexture(b, layer, kind)
+-- Texture from NP.Art, or nil if the file is missing (SetTexture returns false).
+local function ArtTexture(b, layer, path, texCoords)
     local t = b:CreateTexture(nil, layer)
-    if t:SetTexture(RED_ART .. kind) == false then return nil end -- file missing
-    t:SetTexCoord(0, 0.625, 0, 0.6875)
+    if t:SetTexture(path) == false then
+        t:Hide()
+        return nil
+    end
+    if texCoords then t:SetTexCoord(unpack(texCoords)) end
     t:SetAllPoints()
     return t
 end
 
+-- [+]: Blizzard's red panel button (UIPanelButtonTemplate) with a white "+";
+-- else the same art by file; else a plain red button.
 local function MakePlusButton(parent)
     local b = NP.TryCreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
     if b then
         b:SetText("+")
+        if b.SetNormalFontObject then
+            b:SetNormalFontObject(GameFontHighlight)
+            b:SetHighlightFontObject(GameFontHighlight)
+        end
+        local fs = b.GetFontString and b:GetFontString()
+        if fs then fs:SetTextColor(unpack(NP.Color.white)) end
         return b
     end
     b = CreateFrame("Button", nil, parent)
-    local up = ArtTexture(b, "ARTWORK", "Up")
+    local coords = { 0, 0.625, 0, 0.6875 }
+    local up = ArtTexture(b, "ARTWORK", NP.Art.redButtonUp, coords)
     if up then
         b:SetNormalTexture(up)
-        local down = ArtTexture(b, "ARTWORK", "Down")
+        local down = ArtTexture(b, "ARTWORK", NP.Art.redButtonDown, coords)
         if down then b:SetPushedTexture(down) end
-        local hl = ArtTexture(b, "HIGHLIGHT", "Highlight")
+        local hl = ArtTexture(b, "HIGHLIGHT", NP.Art.redButtonHighlight, coords)
         if hl then hl:SetBlendMode("ADD") end
     else
         local bg = b:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetColorTexture(0.55, 0.05, 0.05, 1)
+        bg:SetColorTexture(unpack(NP.Color.red))
         local hl = b:CreateTexture(nil, "HIGHLIGHT")
         hl:SetAllPoints()
         hl:SetColorTexture(1, 1, 1, 0.12)
     end
-    local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     fs:SetPoint("CENTER", 0, 1)
     fs:SetText("+")
+    fs:SetTextColor(unpack(NP.Color.white))
     return b
 end
 
+-- Page-arrow button (spellbook prev/next art, disabled look at the ends); else text arrow.
+local function MakeArrowButton(parent, which) -- which = "Prev" / "Next"
+    local b = CreateFrame("Button", nil, parent)
+    local up = ArtTexture(b, "ARTWORK", NP.Art["page" .. which .. "Up"])
+    if up then
+        b:SetNormalTexture(up)
+        b:SetPushedTexture(NP.Art["page" .. which .. "Down"])
+        b:SetDisabledTexture(NP.Art["page" .. which .. "Disabled"])
+        b:SetHighlightTexture(NP.Art.pageHighlight, "ADD")
+        b.NPWidth = ART_ARROW_W
+        return b
+    end
+    b:Hide()
+    b = MakeButton(parent, which == "Prev" and "<" or ">")
+    b.NPTextArrow = true
+    b.NPWidth = TEXT_ARROW_W
+    return b
+end
+
+-- tooltip: getLines(self) returns a title and a list of { text, colour }
 local function SetTooltip(b, getLines)
+    if b.SetMotionScriptsWhileDisabled then b:SetMotionScriptsWhileDisabled(true) end
     b:SetScript("OnEnter", function(self)
-        local title, line = getLines(self)
+        local title, lines = getLines(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:SetText(title)
-        if line then GameTooltip:AddLine(line, 1, 1, 1, true) end
+        for _, l in ipairs(lines or {}) do
+            local c = l[2] or NP.Color.white
+            GameTooltip:AddLine(l[1], c[1], c[2], c[3], true)
+        end
         GameTooltip:Show()
     end)
     b:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -141,8 +191,32 @@ local function TextWidth(fs)
     return w or fs:GetStringWidth() or 0
 end
 
+-- Cut to `max` characters (UTF-8 safe: counts characters, not bytes) + "...".
+local function CutChars(s, max)
+    local count = 0
+    for pos in s:gmatch("()[%z\1-\127\192-\255][\128-\191]*") do
+        count = count + 1
+        if count > max then
+            local cut = s:sub(1, pos - 1)
+            -- don't end on half of an escaped "||"
+            local pipes = #(cut:match("|*$"))
+            if pipes % 2 == 1 then cut = cut:sub(1, -2) end
+            return cut .. "..."
+        end
+    end
+    return s
+end
+
+-- First line of a note with text in it, for the tab tooltip; "(empty)" if none.
+function NP.NotePreview(text)
+    local line = (text or ""):match("[^\n]*%S[^\n]*")
+    if not line then return "(empty)" end
+    return CutChars(strtrim(line), TOOLTIP_CHARS)
+end
+
 -- Rename -----------------------------------------------------------------------
 
+-- save: true = keep the typed name (Enter, click away, window closed), false = Esc.
 local function FinishRename(save)
     local note = renaming
     if not note then return end
@@ -156,6 +230,7 @@ local function FinishRename(save)
     NP.RefreshTabs()
     NP.UpdateTitle()
 end
+NP.FinishRename = FinishRename
 
 function NP.CancelRename()
     FinishRename(false)
@@ -165,11 +240,12 @@ function NP.StartRename(i)
     local note = NP.db.notes[i]
     local tab = tabs[i]
     if not note or not tab or not tab:IsShown() then return end
-    if renaming then FinishRename(false) end
+    if renaming then FinishRename(true) end
     renaming = note
     renameBox:ClearAllPoints()
-    renameBox:SetPoint("TOPLEFT", tab, "TOPLEFT", 3, -2)
-    renameBox:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", -3, 2)
+    renameBox:SetPoint("LEFT", tab, "LEFT", 3, 0)
+    renameBox:SetPoint("RIGHT", tab, "RIGHT", -3, 0)
+    renameBox:SetHeight(20)
     renameBox:SetText(note.title)
     renameBox:Show()
     renameBox:SetFocus()
@@ -180,8 +256,8 @@ local function CreateRenameBox(parent)
     local eb = NP.TryCreateFrame("EditBox", nil, parent, "BackdropTemplate") or CreateFrame("EditBox", nil, parent)
     if eb.SetBackdrop then
         eb:SetBackdrop(BACKDROP)
-        eb:SetBackdropColor(0, 0, 0, 1)
-        eb:SetBackdropBorderColor(1, 0.82, 0, 1)
+        eb:SetBackdropColor(unpack(NP.Color.renameBg))
+        eb:SetBackdropBorderColor(unpack(NP.Color.gold))
     end
     eb:SetFontObject(GameFontHighlightSmall)
     eb:SetAutoFocus(false)
@@ -191,7 +267,13 @@ local function CreateRenameBox(parent)
     eb:Hide()
     eb:SetScript("OnEnterPressed", function() FinishRename(true) end)
     eb:SetScript("OnEscapePressed", function() FinishRename(false) end)
-    eb:SetScript("OnEditFocusLost", function() FinishRename(false) end)
+    eb:SetScript("OnEditFocusLost", function() FinishRename(true) end) -- click away saves
+    eb:SetScript("OnTabPressed", function()
+        if IsControlKeyDown() then
+            FinishRename(true)
+            NP.CycleNote(IsShiftKeyDown() and -1 or 1)
+        end
+    end)
     return eb
 end
 
@@ -206,6 +288,15 @@ function NP.AddNote()
     NP.SaveText()
     notes[#notes + 1] = { title = NP.NewNoteTitle(notes), text = "" }
     NP.ShowNote(#notes, true) -- already saved above
+    NP.FocusText()
+end
+
+-- Ctrl+Tab / Ctrl+Shift+Tab: next / previous note, wrapping round.
+function NP.CycleNote(dir)
+    local db = NP.db
+    local n = #db.notes
+    if n < 2 then return end
+    NP.ShowNote((db.current - 1 + dir) % n + 1)
     NP.FocusText()
 end
 
@@ -271,7 +362,7 @@ function NP.RequestDelete(i)
             }
         end
         local detail = (note.text == "") and "It is empty." or "Its text will be lost."
-        local ok, dialog = pcall(StaticPopup_Show, "NOTEPAD_DELETE_NOTE", note.title, detail)
+        local ok, dialog = pcall(StaticPopup_Show, "NOTEPAD_DELETE_NOTE", NP.GoldText(note.title), detail)
         shown = ok and dialog
     end
     if not shown then
@@ -280,7 +371,7 @@ function NP.RequestDelete(i)
             pendingDelete = nil
             DeleteNoteTable(note)
         else
-            NP.Print("hold Shift and right-click the tab \"" .. note.title .. "\" to delete it.")
+            NP.Print("hold Shift and right-click the tab \"" .. NP.GoldText(note.title) .. "\" to delete it.")
         end
     end
 end
@@ -324,8 +415,28 @@ end
 
 -- Tab row ------------------------------------------------------------------------
 
+-- Blizzard's top tab (only if it has all the parts we use), else our own box.
+local function NewTabButton()
+    if PanelTemplates_TabResize then
+        local t = NP.TryCreateFrame("Button", nil, row, TAB_TEMPLATE)
+        if t then
+            local complete = true
+            for _, key in ipairs(TAB_PARTS) do
+                if type(t[key]) ~= "table" then complete = false break end
+            end
+            if complete then
+                t.NPBlizz = true
+                t.NPText = t.Text
+                return t
+            end
+            t:Hide()
+        end
+    end
+    return MakeButton(row, nil)
+end
+
 local function CreateTab(i)
-    local t = MakeButton(row, nil)
+    local t = NewTabButton()
     t:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     t:SetScript("OnClick", function(self, button)
         local idx = self.NPIndex
@@ -340,10 +451,34 @@ local function CreateTab(i)
     end)
     SetTooltip(t, function(self)
         local note = NP.db.notes[self.NPIndex]
-        return note and note.title or "", "Double-click: rename\nRight-click: rename, move, delete"
+        if not note then return "", nil end
+        local C = NP.Color
+        return note.title, {
+            { NP.NotePreview(note.text), C.white },
+            { "Double-click: rename", C.grey },
+            { "Right-click: rename, move, delete", C.grey },
+        }
     end)
     tabs[i] = t
     return t
+end
+
+-- Full-name width of a tab.
+local function MeasureTab(t)
+    if t.NPBlizz then
+        PanelTemplates_TabResize(t, 0)
+        return math.max(TAB_MIN_W, math.ceil(t:GetWidth() or 0))
+    end
+    return math.max(TAB_MIN_W, math.ceil(TextWidth(t.NPText) + TAB_PAD))
+end
+
+local function SizeTab(t, w, h)
+    if t.NPBlizz then
+        PanelTemplates_TabResize(t, 0, w)
+        t:SetHeight(h)
+    else
+        t:SetSize(w, h)
+    end
 end
 
 -- Lay the tabs out. ensureCurrent: scroll so the open tab is visible.
@@ -357,9 +492,8 @@ function NP.RefreshTabs(ensureCurrent)
         local t = tabs[i] or CreateTab(i)
         t.NPIndex = i
         t.NPText:SetText(notes[i].title)
-        -- as wide as the whole name; only capped to the tab area when laid out below
-        t.NPWidth = math.max(TAB_MIN_W, math.ceil(TextWidth(t.NPText) + TAB_PAD))
-        Style(t, i == db.current)
+        t.NPWidth = MeasureTab(t) -- as wide as the whole name; capped to the tab area below
+        SetTabSelected(t, i == db.current)
     end
     for i = n + 1, #tabs do tabs[i]:Hide() end
     plusBtn:SetAlpha(n >= NP.MAX_NOTES and 0.4 or 1) -- dimmed at the most notes
@@ -381,7 +515,8 @@ function NP.RefreshTabs(ensureCurrent)
 
     local full = rowW - PLUS_W - GAP
     local overflow = LastFitting(1, full) < n
-    local avail = overflow and (full - 2 * ARROW_W - 2 * GAP) or full
+    local arrowsW = leftBtn.NPWidth + rightBtn.NPWidth + 2 * GAP
+    local avail = overflow and (full - arrowsW) or full
     if not overflow then first = 1 end
     first = Clamp(first, 1, n)
     if ensureCurrent and overflow then
@@ -400,10 +535,10 @@ function NP.RefreshTabs(ensureCurrent)
         local t = tabs[i]
         if i >= first and i <= last then
             local w = math.min(t.NPWidth, math.max(TAB_MIN_W, avail))
-            t:SetSize(w, rowH)
+            t:Show() -- show first: the Blizzard tab resizes itself in OnShow
+            SizeTab(t, w, rowH)
             t:ClearAllPoints()
             t:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", x, 0)
-            t:Show()
             x = x + w + GAP
         else
             t:Hide()
@@ -413,13 +548,15 @@ function NP.RefreshTabs(ensureCurrent)
     leftBtn:SetShown(overflow)
     rightBtn:SetShown(overflow)
     if overflow then
-        Style(leftBtn, false, first <= 1)
-        Style(rightBtn, false, last >= n)
+        leftBtn:SetEnabled(first > 1)
+        rightBtn:SetEnabled(last < n)
+        if leftBtn.NPTextArrow then Style(leftBtn, false, first <= 1) end
+        if rightBtn.NPTextArrow then Style(rightBtn, false, last >= n) end
     end
 
     if renaming then
         local i = IndexOf(renaming)
-        if not i or not tabs[i]:IsShown() then FinishRename(false) end
+        if not i or not tabs[i]:IsShown() then FinishRename(true) end
     end
 end
 
@@ -428,11 +565,18 @@ local function Scroll(delta)
     NP.RefreshTabs(false)
 end
 
+-- For tests and debugging: the row's widgets.
+function NP.TabWidgets()
+    return { row = row, plus = plusBtn, left = leftBtn, right = rightBtn, tabs = tabs, rename = renameBox }
+end
+
 function NP.CreateTabs(f, inset, height)
     if row then return end
     row = CreateFrame("Frame", nil, f)
-    row:SetPoint("BOTTOMLEFT", inset, "TOPLEFT", 0, 2)
-    row:SetPoint("BOTTOMRIGHT", inset, "TOPRIGHT", 0, 2)
+    -- Blizzard tabs stand on the inset's top edge; the boxes keep a 2 px gap
+    local y = (height == BLIZZ_TAB_H) and 0 or 2
+    row:SetPoint("BOTTOMLEFT", inset, "TOPLEFT", 0, y)
+    row:SetPoint("BOTTOMRIGHT", inset, "TOPRIGHT", 0, y)
     row:SetHeight(height)
     row:EnableMouseWheel(true)
     row:SetScript("OnMouseWheel", function(_, delta) Scroll(-delta) end)
@@ -440,26 +584,32 @@ function NP.CreateTabs(f, inset, height)
     row:SetScript("OnShow", function() NP.RefreshTabs(true) end)
     NP.tabRow = row
 
+    local btnH = math.min(height, BOX_TAB_H)
     plusBtn = MakePlusButton(row)
-    plusBtn:SetSize(PLUS_W, height)
-    plusBtn:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
+    plusBtn:SetSize(PLUS_W, btnH)
+    plusBtn:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, math.floor((height - btnH) / 2)) -- centred in the row
     plusBtn:SetScript("OnClick", function() NP.AddNote() end)
     SetTooltip(plusBtn, function()
         if #NP.db.notes >= NP.MAX_NOTES then
-            return "New note", "You already have " .. NP.MAX_NOTES .. " notes (the most)."
+            return "New note", { { "You already have " .. NP.MAX_NOTES .. " notes (the most)." } }
         end
         return "New note"
     end)
 
-    rightBtn = MakeButton(row, ">")
-    rightBtn:SetSize(ARROW_W, height)
+    local arrowTip = function()
+        return "Scroll tabs", { { "(mouse wheel works too)", NP.Color.grey } }
+    end
+    rightBtn = MakeArrowButton(row, "Next")
+    rightBtn:SetSize(rightBtn.NPWidth, btnH)
     rightBtn:SetPoint("BOTTOMRIGHT", plusBtn, "BOTTOMLEFT", -GAP, 0)
     rightBtn:SetScript("OnClick", function() Scroll(1) end)
+    SetTooltip(rightBtn, arrowTip)
 
-    leftBtn = MakeButton(row, "<")
-    leftBtn:SetSize(ARROW_W, height)
+    leftBtn = MakeArrowButton(row, "Prev")
+    leftBtn:SetSize(leftBtn.NPWidth, btnH)
     leftBtn:SetPoint("BOTTOMRIGHT", rightBtn, "BOTTOMLEFT", -GAP, 0)
     leftBtn:SetScript("OnClick", function() Scroll(-1) end)
+    SetTooltip(leftBtn, arrowTip)
 
     renameBox = CreateRenameBox(row)
     NP.RefreshTabs(true)

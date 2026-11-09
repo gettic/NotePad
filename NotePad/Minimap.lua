@@ -36,26 +36,33 @@ function NP.CreateMinimapButton()
     button:SetFrameLevel(8)
     button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     button:RegisterForDrag("LeftButton")
-    button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    button:SetHighlightTexture(NP.Art.minimapHighlight)
 
     local bg = button:CreateTexture(nil, "BACKGROUND")
     bg:SetSize(20, 20)
-    bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    bg:SetTexture(NP.Art.minimapBg)
     bg:SetPoint("TOPLEFT", 7, -5)
 
     local icon = button:CreateTexture(nil, "ARTWORK")
     icon:SetSize(17, 17)
-    icon:SetTexture("Interface\\Icons\\INV_Misc_Note_01")
+    icon:SetTexture(NP.Art.icon)
     icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
     icon:SetPoint("TOPLEFT", 7, -6)
     button.icon = icon
 
     local border = button:CreateTexture(nil, "OVERLAY")
     border:SetSize(53, 53)
-    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    border:SetTexture(NP.Art.minimapBorder)
     border:SetPoint("TOPLEFT")
 
-    button:SetScript("OnClick", function() NP.ToggleWindow() end)
+    -- Left-click: open (unfolded) / close. Right-click: fold / unfold (opens folded if closed).
+    button:SetScript("OnClick", function(_, mouseButton)
+        if mouseButton == "RightButton" then
+            NP.ToggleFold()
+        else
+            NP.ToggleWindow()
+        end
+    end)
     button:SetScript("OnDragStart", function(self)
         self:SetScript("OnUpdate", OnDragUpdate)
         GameTooltip:Hide()
@@ -66,8 +73,10 @@ function NP.CreateMinimapButton()
     button:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Note Pad")
-        GameTooltip:AddLine("Click: open / close", 1, 1, 1)
-        GameTooltip:AddLine("Drag: move this button", 1, 1, 1)
+        local w = NP.Color.white
+        GameTooltip:AddLine("Left-click: open / close", w[1], w[2], w[3])
+        GameTooltip:AddLine("Right-click: fold / unfold", w[1], w[2], w[3])
+        GameTooltip:AddLine("Drag: move this button", w[1], w[2], w[3])
         GameTooltip:Show()
     end)
     button:SetScript("OnLeave", function() GameTooltip:Hide() end)

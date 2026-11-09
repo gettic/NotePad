@@ -12,8 +12,74 @@ NP.defaults = {
     minimap = { angle = 225, hide = false },
 }
 
+-- All art in one place: paths to Blizzard art that ships with the game (no bundled files).
+NP.Art = {
+    icon             = "Interface\\Icons\\INV_Misc_Note_01",
+    minimapBorder    = "Interface\\Minimap\\MiniMap-TrackingBorder",
+    minimapBg        = "Interface\\Minimap\\UI-Minimap-Background",
+    minimapHighlight = "Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight",
+    gripUp           = "Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up",
+    gripDown         = "Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down",
+    gripHighlight    = "Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight",
+    redButtonUp      = "Interface\\Buttons\\UI-Panel-Button-Up",
+    redButtonDown    = "Interface\\Buttons\\UI-Panel-Button-Down",
+    redButtonHighlight = "Interface\\Buttons\\UI-Panel-Button-Highlight",
+    pagePrevUp       = "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up",
+    pagePrevDown     = "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Down",
+    pagePrevDisabled = "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Disabled",
+    pageNextUp       = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up",
+    pageNextDown     = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down",
+    pageNextDisabled = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Disabled",
+    pageHighlight    = "Interface\\Buttons\\UI-Common-MouseHilight",
+    tooltipBg        = "Interface\\Tooltips\\UI-Tooltip-Background",
+    tooltipBorder    = "Interface\\Tooltips\\UI-Tooltip-Border",
+    dialogBg         = "Interface\\DialogFrame\\UI-DialogBox-Background",
+    dialogBorder     = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    smallerUp        = "Interface\\Buttons\\UI-Panel-SmallerButton-Up",
+    smallerDown      = "Interface\\Buttons\\UI-Panel-SmallerButton-Down",
+    biggerUp         = "Interface\\Buttons\\UI-Panel-BiggerButton-Up",
+    biggerDown       = "Interface\\Buttons\\UI-Panel-BiggerButton-Down",
+    minimizeHighlight = "Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight",
+}
+
+-- All colours in one place: Blizzard's named colours where they exist, else the same values.
+local function NamedColor(global, r, g, b)
+    local c = _G[global]
+    if type(c) == "table" and c.GetRGB then
+        local cr, cg, cb = c:GetRGB()
+        return { cr, cg, cb, 1 }
+    end
+    return { r, g, b, 1 }
+end
+
+NP.Color = {
+    gold        = NamedColor("NORMAL_FONT_COLOR", 1, 0.82, 0),
+    white       = NamedColor("HIGHLIGHT_FONT_COLOR", 1, 1, 1),
+    grey        = NamedColor("GRAY_FONT_COLOR", 0.5, 0.5, 0.5),
+    tabText     = { 0.85, 0.85, 0.85, 1 },
+    tabBg       = { 0.06, 0.06, 0.06, 0.9 },
+    tabBorder   = { 0.45, 0.45, 0.45, 1 },
+    tabSelBg    = { 0.25, 0.2, 0.05, 0.95 },
+    tabPlainBg  = { 0.1, 0.1, 0.1, 0.9 },
+    tabPlainSel = { 0.35, 0.28, 0.05, 0.95 },
+    barBg       = { 0.05, 0.05, 0.05, 0.95 },
+    barBorder   = { 0.6, 0.6, 0.6, 1 },
+    red         = { 0.55, 0.05, 0.05, 1 },
+    renameBg    = { 0, 0, 0, 1 },
+    hover       = { 1, 1, 1, 0.08 },
+}
+
+-- Text in Blizzard's gold (NORMAL_FONT_COLOR).
+function NP.GoldText(s)
+    s = tostring(s)
+    if NORMAL_FONT_COLOR and NORMAL_FONT_COLOR.WrapTextInColorCode then
+        return NORMAL_FONT_COLOR:WrapTextInColorCode(s)
+    end
+    return "|cffffd100" .. s .. "|r"
+end
+
 function NP.Print(msg)
-    DEFAULT_CHAT_FRAME:AddMessage("|cffffd100Note Pad:|r " .. tostring(msg))
+    DEFAULT_CHAT_FRAME:AddMessage(NP.GoldText("Note Pad:") .. " " .. tostring(msg))
 end
 
 -- Fill missing or wrongly typed keys from defaults; never touch keys that are fine.
@@ -142,16 +208,32 @@ local function HandleSlash(msg)
     local cmd = strtrim(strlower(msg or ""))
     if cmd == "" then
         NP.ToggleWindow()
+    elseif cmd == "new" then
+        NP.OpenWindow()
+        NP.AddNote()
+    elseif cmd:match("^%d+$") then
+        local n = tonumber(cmd)
+        local count = #NP.db.notes
+        if NP.db.notes[n] then
+            NP.OpenWindow()
+            NP.ShowNote(n)
+        else
+            NP.Print("there is no note " .. n .. " (you have " .. count .. (count == 1 and " note)." or " notes)."))
+        end
     elseif cmd == "reset" then
         NP.ResetWindow()
         NP.Print("window reset to the middle of the screen.")
     elseif cmd == "minimap" then
         NP.ToggleMinimapButton()
     else
-        NP.Print("/np - open or close the note pad")
+        NP.Print("/np - open or close the note pad (opens unfolded)")
+        NP.Print("/np new - add a new note")
+        NP.Print("/np <number> - open note number <number>, e.g. /np 2")
         NP.Print("/np reset - move the window back to the middle (and unfold it)")
         NP.Print("/np minimap - show or hide the minimap button")
-        NP.Print("Tabs: click [+] to add a note, double-click a tab to rename, right-click for more.")
+        NP.Print("Tabs: [+] adds a note, double-click a tab to rename, right-click for more; Ctrl+Tab / Ctrl+Shift+Tab switch notes while typing.")
+        NP.Print("Fold the window to its title bar: the fold button, double-click the title bar, or right-click the minimap button.")
+        NP.Print("Notes save as you type.")
     end
 end
 
