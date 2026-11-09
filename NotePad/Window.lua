@@ -544,6 +544,56 @@ local function CreateMinimizeButton(f)
     return b
 end
 
+-- Title at the left of the title bar (folded too: same text, same anchors), one line,
+-- cut with "..." before the fold button. Styled: the template's own TitleText keeps
+-- its height; fallback: our NPTitle. If neither exists, nothing changes.
+local TITLE_LEFT_STYLED, TITLE_LEFT_FALLBACK, TITLE_GAP_RIGHT = 12, 16, 4
+local TITLE_RIGHT_DEFAULT = 60 -- until the fold button can be measured (first show)
+
+-- Both title anchors are TOP points on the same strip (a mixed TOPLEFT + RIGHT pair
+-- would give the text two different vertical anchors), so the right edge is an offset
+-- from the strip's right: measured as "strip right -> fold button left + gap".
+local function SetTitleRight(text, rel, y, inset)
+    text:SetPoint("TOPRIGHT", rel, "TOPRIGHT", -inset, y)
+end
+
+local function MeasureTitleRight(f)
+    local t = f.NPTitleText
+    if not t then return end
+    local r, l = t.rel:GetRight(), t.mm and t.mm:GetLeft()
+    if type(r) == "number" and type(l) == "number" and r > l then
+        SetTitleRight(t.text, t.rel, t.y, r - l + TITLE_GAP_RIGHT)
+    end
+end
+
+local function PlaceTitleLeft(f, mm)
+    local text, rel, x, y
+    if type(f.NPTitle) == "table" then
+        text, rel, x, y = f.NPTitle, f, TITLE_LEFT_FALLBACK, -16
+    else
+        local tc = f.TitleContainer
+        text = type(tc) == "table" and tc.TitleText
+        if type(text) ~= "table" or not text.SetPoint then return end
+        rel, x, y = tc, TITLE_LEFT_STYLED, nil
+        -- keep the template's height: its vertical offset from the strip's top
+        for i = 1, (text.GetNumPoints and text:GetNumPoints() or 0) do
+            local p, _, rp, _, py = text:GetPoint(i)
+            if type(p) == "string" and p:find("TOP") and type(rp) == "string" and rp:find("TOP") and type(py) == "number" then
+                y = py break
+            end
+        end
+        y = y or -5
+    end
+    text:ClearAllPoints()
+    text:SetPoint("TOPLEFT", rel, "TOPLEFT", x, y)
+    SetTitleRight(text, rel, y, TITLE_RIGHT_DEFAULT)
+    if text.SetJustifyH then text:SetJustifyH("LEFT") end
+    if text.SetWordWrap then text:SetWordWrap(false) end
+    if text.SetMaxLines then text:SetMaxLines(1) end
+    f.NPTitleText = { text = text, rel = rel, y = y, mm = type(mm) == "table" and mm or nil }
+    MeasureTitleRight(f)
+end
+
 function NP.CreateWindow()
     if frame then return end
     frame = CreateStyledFrame() or CreateFallbackFrame()
@@ -587,6 +637,7 @@ function NP.CreateWindow()
     frame:HookScript("OnShow", function(self)
         -- measure the metal corner again now that the window is laid out
         if NP.db.window.minimized then UpdateFoldedBarHeight(self:GetHeight()) end
+        MeasureTitleRight(self) -- the fold button's real position is known now
     end)
     frame:HookScript("OnHide", function(self)
         self:StopMovingOrSizing()
@@ -626,6 +677,7 @@ function NP.CreateWindow()
 
     grip = CreateResizeGrip(frame)
     minButton = CreateMinimizeButton(frame)
+    PlaceTitleLeft(frame, minButton)
     ApplyPosition()
     if NP.db.window.minimized then ApplyMinimized(true) end
     NP.UpdateTitle()
