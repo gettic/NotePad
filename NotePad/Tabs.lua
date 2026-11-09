@@ -1,0 +1,429 @@
+-- Note Pad: tab row (one tab per note: add, switch, rename, move, delete)
+local _, NP = ...
+
+local TAB_MIN_W, TAB_MAX_W, TAB_PAD, GAP = 50, 120, 20, 2
+local PLUS_W, ARROW_W = 24, 18
+local MAX_TITLE = 24
+
+local row, plusBtn, leftBtn, rightBtn, renameBox
+local tabs = {}      -- tab buttons, reused
+local first = 1      -- first tab shown when they don't all fit
+local renaming       -- note table being renamed
+local pendingDelete  -- note table waiting for the delete popup
+
+local BACKDROP = {
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 12,
+    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+}
+
+local function Clamp(v, lo, hi)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+
+local function IndexOf(note)
+    for i, n in ipairs(NP.db.notes) do
+        if n == note then return i end
+    end
+end
+
+-- Look -------------------------------------------------------------------------
+
+local function Style(b, selected, dimmed)
+    if b.SetBackdropColor then
+        if selected then
+            b:SetBackdropColor(0.25, 0.2, 0.05, 0.95)
+            b:SetBackdropBorderColor(1, 0.82, 0, 1)
+        else
+            b:SetBackdropColor(0.06, 0.06, 0.06, 0.9)
+            b:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
+        end
+    elseif b.NPBg then
+        if selected then
+            b.NPBg:SetColorTexture(0.35, 0.28, 0.05, 0.95)
+        else
+            b.NPBg:SetColorTexture(0.1, 0.1, 0.1, 0.9)
+        end
+    end
+    if selected then
+        b.NPText:SetTextColor(1, 0.82, 0)
+    else
+        b.NPText:SetTextColor(0.85, 0.85, 0.85)
+    end
+    b:SetAlpha(dimmed and 0.4 or 1)
+end
+
+local function MakeButton(parent, label)
+    local b = NP.TryCreateFrame("Button", nil, parent, "BackdropTemplate") or CreateFrame("Button", nil, parent)
+    if b.SetBackdrop then
+        b:SetBackdrop(BACKDROP)
+    else
+        local bg = b:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        b.NPBg = bg
+    end
+    local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    if label then
+        fs:SetPoint("CENTER") -- small fixed buttons: + < >
+    else
+        fs:SetPoint("LEFT", 6, 0) -- tabs: long names end in "..."
+        fs:SetPoint("RIGHT", -6, 0)
+    end
+    fs:SetWordWrap(false)
+    fs:SetJustifyH("CENTER")
+    fs:SetText(label or "")
+    b.NPText = fs
+    local hl = b:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetPoint("TOPLEFT", 3, -3)
+    hl:SetPoint("BOTTOMRIGHT", -3, 3)
+    hl:SetColorTexture(1, 1, 1, 0.08)
+    Style(b, false)
+    return b
+end
+
+local function SetTooltip(b, getLines)
+    b:SetScript("OnEnter", function(self)
+        local title, line = getLines(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText(title)
+        if line then GameTooltip:AddLine(line, 1, 1, 1, true) end
+        GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+end
+
+local function TextWidth(fs)
+    local w
+    if fs.GetUnboundedStringWidth then w = fs:GetUnboundedStringWidth() end
+    return w or fs:GetStringWidth() or 0
+end
+
+-- Rename -----------------------------------------------------------------------
+
+local function FinishRename(save)
+    local note = renaming
+    if not note then return end
+    renaming = nil
+    local text = strtrim(renameBox:GetText() or "")
+    renameBox:ClearFocus()
+    renameBox:Hide()
+    if save and text ~= "" then
+        note.title = text
+    end
+    NP.RefreshTabs()
+    NP.UpdateTitle()
+end
+
+function NP.CancelRename()
+    FinishRename(false)
+end
+
+function NP.StartRename(i)
+    local note = NP.db.notes[i]
+    local tab = tabs[i]
+    if not note or not tab or not tab:IsShown() then return end
+    if renaming then FinishRename(false) end
+    renaming = note
+    renameBox:ClearAllPoints()
+    renameBox:SetPoint("TOPLEFT", tab, "TOPLEFT", 3, -2)
+    renameBox:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", -3, 2)
+    renameBox:SetText(note.title)
+    renameBox:Show()
+    renameBox:SetFocus()
+    renameBox:HighlightText()
+end
+
+local function CreateRenameBox(parent)
+    local eb = NP.TryCreateFrame("EditBox", nil, parent, "BackdropTemplate") or CreateFrame("EditBox", nil, parent)
+    if eb.SetBackdrop then
+        eb:SetBackdrop(BACKDROP)
+        eb:SetBackdropColor(0, 0, 0, 1)
+        eb:SetBackdropBorderColor(1, 0.82, 0, 1)
+    end
+    eb:SetFontObject(GameFontHighlightSmall)
+    eb:SetAutoFocus(false)
+    eb:SetMaxLetters(MAX_TITLE)
+    eb:SetTextInsets(5, 5, 0, 0)
+    eb:SetFrameLevel(parent:GetFrameLevel() + 20)
+    eb:Hide()
+    eb:SetScript("OnEnterPressed", function() FinishRename(true) end)
+    eb:SetScript("OnEscapePressed", function() FinishRename(false) end)
+    eb:SetScript("OnEditFocusLost", function() FinishRename(false) end)
+    return eb
+end
+
+-- Note actions -----------------------------------------------------------------
+
+function NP.AddNote()
+    local notes = NP.db.notes
+    if #notes >= NP.MAX_NOTES then
+        NP.Print("you can have up to " .. NP.MAX_NOTES .. " notes.")
+        return
+    end
+    NP.SaveText()
+    notes[#notes + 1] = { title = NP.NewNoteTitle(notes), text = "" }
+    NP.ShowNote(#notes, true) -- already saved above
+    NP.FocusText()
+end
+
+function NP.MoveNote(i, dir)
+    local db = NP.db
+    local j = i + dir
+    if not db.notes[i] or not db.notes[j] then return end
+    NP.SaveText()
+    db.notes[i], db.notes[j] = db.notes[j], db.notes[i]
+    if db.current == i then
+        db.current = j
+    elseif db.current == j then
+        db.current = i
+    end
+    NP.RefreshTabs(true)
+end
+
+local function DeleteNoteTable(note)
+    local db = NP.db
+    local i = IndexOf(note)
+    if not i or #db.notes <= 1 then return end
+    if renaming == note then FinishRename(false) end
+    local wasCurrent = (i == db.current)
+    if not wasCurrent then NP.SaveText() end
+    table.remove(db.notes, i)
+    if wasCurrent then
+        NP.ShowNote(math.min(i, #db.notes), true) -- the text box held the deleted note
+    else
+        if db.current > i then db.current = db.current - 1 end
+        NP.RefreshTabs(true)
+    end
+end
+
+-- Ask before deleting a note that has text. Empty notes go at once.
+-- The last note can't be deleted.
+function NP.RequestDelete(i)
+    local db = NP.db
+    local note = db.notes[i]
+    if not note then return end
+    if #db.notes <= 1 then
+        NP.Print("the last note can't be deleted.")
+        return
+    end
+    if i == db.current then NP.SaveText() end
+    if note.text == "" then
+        DeleteNoteTable(note)
+        return
+    end
+    pendingDelete = note
+    local shown
+    if StaticPopupDialogs and StaticPopup_Show then
+        if not StaticPopupDialogs.NOTEPAD_DELETE_NOTE then
+            StaticPopupDialogs.NOTEPAD_DELETE_NOTE = {
+                text = "Delete note \"%s\"?\nIts text will be lost.",
+                button1 = YES or "Yes",
+                button2 = NO or "No",
+                OnAccept = function()
+                    local n = pendingDelete
+                    pendingDelete = nil
+                    if n then DeleteNoteTable(n) end
+                end,
+                OnCancel = function() pendingDelete = nil end,
+                timeout = 0,
+                whileDead = true,
+                hideOnEscape = true,
+                showAlert = true,
+                preferredIndex = 3,
+            }
+        end
+        local ok, dialog = pcall(StaticPopup_Show, "NOTEPAD_DELETE_NOTE", note.title)
+        shown = ok and dialog
+    end
+    if not shown then
+        -- No popup available: Shift + right-click is the deliberate way to delete.
+        if IsShiftKeyDown() then
+            pendingDelete = nil
+            DeleteNoteTable(note)
+        else
+            NP.Print("hold Shift and right-click the tab to delete \"" .. note.title .. "\".")
+        end
+    end
+end
+
+-- Right-click menu (MenuUtil; only calls our own functions, nothing protected).
+local function OpenMenu(owner, i)
+    local note = NP.db.notes[i]
+    if not note then return end
+    local ok = false
+    if MenuUtil and MenuUtil.CreateContextMenu then
+        ok = pcall(MenuUtil.CreateContextMenu, owner, function(_, root)
+            local notes = NP.db.notes
+            local idx = IndexOf(note)
+            if not idx then return end
+            root:CreateTitle(note.title)
+            root:CreateButton("Rename", function()
+                local j = IndexOf(note)
+                if j then NP.StartRename(j) end
+            end)
+            local left = root:CreateButton("Move left", function()
+                local j = IndexOf(note)
+                if j then NP.MoveNote(j, -1) end
+            end)
+            if idx <= 1 and left and left.SetEnabled then left:SetEnabled(false) end
+            local right = root:CreateButton("Move right", function()
+                local j = IndexOf(note)
+                if j then NP.MoveNote(j, 1) end
+            end)
+            if idx >= #notes and right and right.SetEnabled then right:SetEnabled(false) end
+            local del = root:CreateButton("Delete", function()
+                local j = IndexOf(note)
+                if j then NP.RequestDelete(j) end
+            end)
+            if #notes <= 1 and del and del.SetEnabled then del:SetEnabled(false) end
+        end)
+    end
+    if not ok then
+        NP.StartRename(i) -- no menu: right-click renames, Shift + right-click deletes
+    end
+end
+
+-- Tab row ------------------------------------------------------------------------
+
+local function CreateTab(i)
+    local t = MakeButton(row, nil)
+    t:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    t:SetScript("OnClick", function(self, button)
+        local idx = self.NPIndex
+        if button == "RightButton" then
+            if IsShiftKeyDown() then NP.RequestDelete(idx) else OpenMenu(self, idx) end
+        elseif idx ~= NP.db.current then
+            NP.ShowNote(idx)
+        end
+    end)
+    t:SetScript("OnDoubleClick", function(self, button)
+        if button == "LeftButton" then NP.StartRename(self.NPIndex) end
+    end)
+    SetTooltip(t, function(self)
+        local note = NP.db.notes[self.NPIndex]
+        return note and note.title or "", "Double-click: rename\nRight-click: rename, move, delete"
+    end)
+    tabs[i] = t
+    return t
+end
+
+-- Lay the tabs out. ensureCurrent: scroll so the open tab is visible.
+function NP.RefreshTabs(ensureCurrent)
+    if not row then return end
+    local db = NP.db
+    local notes = db.notes
+    local n = #notes
+
+    for i = 1, n do
+        local t = tabs[i] or CreateTab(i)
+        t.NPIndex = i
+        t.NPText:SetText(notes[i].title)
+        t.NPWidth = Clamp(math.floor(TextWidth(t.NPText) + TAB_PAD + 0.5), TAB_MIN_W, TAB_MAX_W)
+        Style(t, i == db.current)
+    end
+    for i = n + 1, #tabs do tabs[i]:Hide() end
+    Style(plusBtn, false, n >= NP.MAX_NOTES)
+
+    local rowW, rowH = row:GetWidth(), row:GetHeight()
+    if not rowW or rowW <= 0 then return end
+
+    -- last tab index that fits from `from` in `avail` pixels (always at least one)
+    local function LastFitting(from, avail)
+        local x, last = 0, from - 1
+        for i = from, n do
+            local w = tabs[i].NPWidth
+            if i > from and x + w > avail then break end
+            x = x + w + GAP
+            last = i
+        end
+        return last
+    end
+
+    local full = rowW - PLUS_W - GAP
+    local overflow = LastFitting(1, full) < n
+    local avail = overflow and (full - 2 * ARROW_W - 2 * GAP) or full
+    if not overflow then first = 1 end
+    first = Clamp(first, 1, n)
+    if ensureCurrent and overflow then
+        if db.current < first then first = db.current end
+        while first < db.current and LastFitting(first, avail) < db.current do
+            first = first + 1
+        end
+    end
+    while first > 1 and LastFitting(first - 1, avail) >= n do
+        first = first - 1 -- no empty space at the end
+    end
+    local last = LastFitting(first, avail)
+
+    local x = 0
+    for i = 1, n do
+        local t = tabs[i]
+        if i >= first and i <= last then
+            local w = math.min(t.NPWidth, math.max(TAB_MIN_W, avail))
+            t:SetSize(w, rowH)
+            t:ClearAllPoints()
+            t:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", x, 0)
+            t:Show()
+            x = x + w + GAP
+        else
+            t:Hide()
+        end
+    end
+
+    leftBtn:SetShown(overflow)
+    rightBtn:SetShown(overflow)
+    if overflow then
+        Style(leftBtn, false, first <= 1)
+        Style(rightBtn, false, last >= n)
+    end
+
+    if renaming then
+        local i = IndexOf(renaming)
+        if not i or not tabs[i]:IsShown() then FinishRename(false) end
+    end
+end
+
+local function Scroll(delta)
+    first = first + delta
+    NP.RefreshTabs(false)
+end
+
+function NP.CreateTabs(f, inset, height)
+    if row then return end
+    row = CreateFrame("Frame", nil, f)
+    row:SetPoint("BOTTOMLEFT", inset, "TOPLEFT", 0, 2)
+    row:SetPoint("BOTTOMRIGHT", inset, "TOPRIGHT", 0, 2)
+    row:SetHeight(height)
+    row:EnableMouseWheel(true)
+    row:SetScript("OnMouseWheel", function(_, delta) Scroll(-delta) end)
+    row:SetScript("OnSizeChanged", function() NP.RefreshTabs(true) end)
+    row:SetScript("OnShow", function() NP.RefreshTabs(true) end)
+    NP.tabRow = row
+
+    plusBtn = MakeButton(row, "+")
+    plusBtn:SetSize(PLUS_W, height)
+    plusBtn:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
+    plusBtn:SetScript("OnClick", function() NP.AddNote() end)
+    SetTooltip(plusBtn, function()
+        if #NP.db.notes >= NP.MAX_NOTES then
+            return "New note", "You already have " .. NP.MAX_NOTES .. " notes (the most)."
+        end
+        return "New note"
+    end)
+
+    rightBtn = MakeButton(row, ">")
+    rightBtn:SetSize(ARROW_W, height)
+    rightBtn:SetPoint("BOTTOMRIGHT", plusBtn, "BOTTOMLEFT", -GAP, 0)
+    rightBtn:SetScript("OnClick", function() Scroll(1) end)
+
+    leftBtn = MakeButton(row, "<")
+    leftBtn:SetSize(ARROW_W, height)
+    leftBtn:SetPoint("BOTTOMRIGHT", rightBtn, "BOTTOMLEFT", -GAP, 0)
+    leftBtn:SetScript("OnClick", function() Scroll(-1) end)
+
+    renameBox = CreateRenameBox(row)
+    NP.RefreshTabs(true)
+end

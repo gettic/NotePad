@@ -1,10 +1,14 @@
--- Note Pad: main window (frame, text box, move/resize, Escape)
+-- Note Pad: main window (frame, text box, move/resize, minimize, Escape)
 local _, NP = ...
 
 local MIN_W, MIN_H = 260, 180
 local MAX_W, MAX_H = 1200, 900
+local TAB_H = 26 -- room for the tab row above the text box
 
 local frame, editBox
+local modernBox, classicScroll -- whichever editor was built
+local grip, minButton
+local collapsedH = 34
 
 local function TemplateExists(name)
     if C_XMLUtil and C_XMLUtil.GetTemplateInfo then
@@ -19,6 +23,7 @@ local function TryCreateFrame(frameType, name, parent, template)
     if ok then return f end
     return nil
 end
+NP.TryCreateFrame = TryCreateFrame
 
 local function Clamp(v, lo, hi)
     if v < lo then return lo end
@@ -30,35 +35,44 @@ end
 
 function NP.SaveText()
     if editBox and NP.db then
-        NP.db.text = editBox:GetText() or ""
+        local note = NP.CurrentNote()
+        if note then note.text = editBox:GetText() or "" end
     end
+end
+
+-- Anchor by the top-left corner, so folding the window keeps the title bar in place.
+local function AnchorTopLeft()
+    local left, top = frame:GetLeft(), frame:GetTop()
+    if not left or not top then return end
+    frame:ClearAllPoints()
+    frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
 end
 
 local function SavePosition()
     local win = NP.db.window
+    AnchorTopLeft()
     local point, _, relPoint, x, y = frame:GetPoint(1)
     if point then
         win.point, win.relPoint, win.x, win.y = point, relPoint, x, y
     end
-    win.w, win.h = frame:GetWidth(), frame:GetHeight()
+    win.w = frame:GetWidth()
+    if not win.minimized then win.h = frame:GetHeight() end
 end
 
-local function ApplyPosition()
+local function FullSize()
     local win = NP.db.window
     local screenW, screenH = UIParent:GetWidth(), UIParent:GetHeight()
     local w = Clamp(win.w, MIN_W, math.min(MAX_W, math.max(MIN_W, screenW)))
     local h = Clamp(win.h, MIN_H, math.min(MAX_H, math.max(MIN_H, screenH)))
-    frame:SetSize(w, h)
-    frame:ClearAllPoints()
-    frame:SetPoint(win.point, UIParent, win.relPoint, win.x, win.y)
+    return w, h
 end
 
-function NP.ResetWindow()
-    local d = NP.defaults.window
+local function ApplyPosition()
     local win = NP.db.window
-    win.point, win.relPoint, win.x, win.y = d.point, d.relPoint, d.x, d.y
-    win.w, win.h = d.w, d.h
-    if frame then ApplyPosition() end
+    local w, h = FullSize()
+    frame:SetSize(w, win.minimized and collapsedH or h)
+    frame:ClearAllPoints()
+    frame:SetPoint(win.point, UIParent, win.relPoint, win.x, win.y)
 end
 
 -- Text box -----------------------------------------------------------------
@@ -70,7 +84,10 @@ local function SetupEditBoxScripts(eb)
     if eb.SetMaxBytes then eb:SetMaxBytes(0) end
     eb:SetFontObject(ChatFontNormal)
     eb:HookScript("OnTextChanged", function(self, userInput)
-        if userInput then NP.db.text = self:GetText() or "" end
+        if userInput then
+            local note = NP.CurrentNote()
+            if note then note.text = self:GetText() or "" end
+        end
     end)
     eb:HookScript("OnEscapePressed", function(self) self:ClearFocus() end)
 end
@@ -91,9 +108,9 @@ local function CreateModernEditor(parent)
 
     local eb = box:GetEditBox()
     SetupEditBoxScripts(eb)
-    local text = NP.db.text
+    local text = NP.CurrentNote().text
     if box.SetText then box:SetText(text) else eb:SetText(text) end
-    return eb
+    return eb, box
 end
 
 -- Fallback: classic ScrollFrame + EditBox.
@@ -128,8 +145,105 @@ local function CreateClassicEditor(parent)
         end
     end)
     SetupEditBoxScripts(eb)
-    eb:SetText(NP.db.text)
+    eb:SetText(NP.CurrentNote().text)
+    classicScroll = scroll
     return eb
+end
+
+local function SetEditorText(text)
+    if modernBox and modernBox.SetText then
+        modernBox:SetText(text)
+    else
+        editBox:SetText(text)
+    end
+    editBox:SetCursorPosition(0)
+    if modernBox and modernBox.GetScrollBox then
+        local sb = modernBox:GetScrollBox()
+        if sb and sb.ScrollToBegin then sb:ScrollToBegin() end
+    end
+    if classicScroll then classicScroll:SetVerticalScroll(0) end
+end
+
+-- Notes ----------------------------------------------------------------------
+
+function NP.UpdateTitle()
+    if not frame then return end
+    local note = NP.CurrentNote()
+    local text = "Note Pad"
+    if note and note.title ~= "" then text = "Note Pad - " .. note.title end
+    if frame.NPTitle then
+        frame.NPTitle:SetText(text)
+    elseif frame.SetTitle then
+        frame:SetTitle(text)
+    elseif frame.TitleText then
+        frame.TitleText:SetText(text)
+    end
+end
+
+-- Open note `index`. skipSave: the text box holds a note that no longer exists (deleted).
+function NP.ShowNote(index, skipSave)
+    local db = NP.db
+    if not db.notes[index] then index = 1 end
+    if not skipSave then NP.SaveText() end
+    db.current = index
+    if editBox then SetEditorText(db.notes[index].text) end
+    NP.UpdateTitle()
+    if NP.RefreshTabs then NP.RefreshTabs(true) end
+end
+
+function NP.FocusText()
+    if editBox and frame and frame:IsShown() and not NP.db.window.minimized then
+        editBox:SetFocus()
+    end
+end
+
+-- Minimize -----------------------------------------------------------------
+
+local function ApplyMinimized(on)
+    local inset = frame.NPInset
+    if on then
+        if editBox then
+            editBox:ClearFocus()
+            NP.SaveText()
+        end
+        if NP.CancelRename then NP.CancelRename() end
+        inset:Hide()
+        if NP.tabRow then NP.tabRow:Hide() end
+        if grip then grip:Hide() end
+        frame:SetResizeBounds(MIN_W, collapsedH, MAX_W, MAX_H)
+        frame:SetHeight(collapsedH)
+    else
+        local _, h = FullSize()
+        frame:SetResizeBounds(MIN_W, MIN_H, MAX_W, MAX_H)
+        frame:SetHeight(h)
+        inset:Show()
+        if NP.tabRow then NP.tabRow:Show() end
+        if grip then grip:Show() end
+    end
+    if minButton then minButton:UpdateLook(on) end
+end
+
+function NP.SetMinimized(on)
+    on = not not on
+    local win = NP.db.window
+    if frame and not win.minimized then SavePosition() end -- keep the full height
+    win.minimized = on
+    if not frame then return end
+    AnchorTopLeft()
+    ApplyMinimized(on)
+    SavePosition()
+end
+
+function NP.ResetWindow()
+    local d = NP.defaults.window
+    local win = NP.db.window
+    win.point, win.relPoint, win.x, win.y = d.point, d.relPoint, d.x, d.y
+    win.w, win.h = d.w, d.h
+    win.minimized = false
+    if frame then
+        ApplyPosition()
+        ApplyMinimized(false)
+    end
 end
 
 -- Window -----------------------------------------------------------------
@@ -144,13 +258,20 @@ local function CreateFallbackFrame()
     })
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", 0, -16)
+    title:SetPoint("LEFT", 40, 0)
+    title:SetPoint("RIGHT", -60, 0)
+    title:SetWordWrap(false)
     title:SetText("Note Pad")
+    f.NPTitle = title
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -6, -6)
+    f.NPClose = close
     local inset = CreateFrame("Frame", nil, f)
     inset:SetPoint("TOPLEFT", 14, -36)
     inset:SetPoint("BOTTOMRIGHT", -14, 18)
     f.NPInset = inset
+    f.NPCollapsedH = 48
+    f.NPTitleH = 34
     return f
 end
 
@@ -159,35 +280,87 @@ local function CreateStyledFrame()
     if not f or not f.Inset then return nil end
     if ButtonFrameTemplate_HidePortrait then ButtonFrameTemplate_HidePortrait(f) end
     if ButtonFrameTemplate_HideButtonBar then ButtonFrameTemplate_HideButtonBar(f) end
-    if f.SetTitle then
-        f:SetTitle("Note Pad")
-    elseif f.TitleText then
-        f.TitleText:SetText("Note Pad")
-    end
     f.NPInset = f.Inset
+    f.NPClose = f.CloseButton
+    f.NPCollapsedH = 34
+    f.NPTitleH = 24
     return f
 end
 
+-- Make room for the tab row between the title bar and the inset: the styled
+-- frame's inset already starts 60 px down (enough room); the fallback one needs moving.
+local function MakeRoomForTabs(f, inset)
+    local titleH = f.NPTitleH or 24
+    for i = 1, inset:GetNumPoints() do
+        local p, rel, rp, x, y = inset:GetPoint(i)
+        if p == "TOPLEFT" or p == "TOP" or p == "TOPRIGHT" then
+            local gap = -(y or 0) - titleH
+            local shift = math.max(0, TAB_H - gap)
+            if shift > 0 then inset:SetPoint(p, rel, rp, x, y - shift) end
+        end
+    end
+end
+
 local function CreateResizeGrip(f)
-    local grip = CreateFrame("Button", nil, f)
-    grip:SetSize(16, 16)
-    grip:SetPoint("BOTTOMRIGHT", -4, 4)
-    grip:SetFrameLevel(f:GetFrameLevel() + 10)
-    grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-    grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-    grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-    grip:SetScript("OnMouseDown", function(_, button)
+    local g = CreateFrame("Button", nil, f)
+    g:SetSize(16, 16)
+    g:SetPoint("BOTTOMRIGHT", -4, 4)
+    g:SetFrameLevel(f:GetFrameLevel() + 10)
+    g:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    g:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    g:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    g:SetScript("OnMouseDown", function(_, button)
         if button == "LeftButton" then f:StartSizing("BOTTOMRIGHT") end
     end)
-    grip:SetScript("OnMouseUp", function()
+    g:SetScript("OnMouseUp", function()
         f:StopMovingOrSizing()
         SavePosition()
     end)
+    return g
+end
+
+-- Minimize button left of the close button: Blizzard's red fold/unfold button
+-- if the template exists, else our own button with the old smaller/bigger arrows.
+local function CreateMinimizeButton(f)
+    local close = f.NPClose
+    local mm = TryCreateFrame("Frame", nil, f, "MaximizeMinimizeButtonFrameTemplate")
+    if mm and mm.Minimize and mm.Maximize and mm.SetOnMinimizedCallback and mm.SetOnMaximizedCallback then
+        if close then
+            mm:SetPoint("RIGHT", close, "LEFT", 2, 0)
+        else
+            mm:SetPoint("TOPRIGHT", -30, -2)
+        end
+        mm:SetOnMinimizedCallback(function() NP.SetMinimized(true) end)
+        mm:SetOnMaximizedCallback(function() NP.SetMinimized(false) end)
+        function mm:UpdateLook(on)
+            -- automatic action, no callback: only switches which arrow is shown
+            if on then self:Minimize(true, true) else self:Maximize(true, true) end
+        end
+        return mm
+    end
+
+    local b = CreateFrame("Button", nil, f)
+    b:SetSize(32, 32)
+    if close then
+        b:SetPoint("RIGHT", close, "LEFT", 8, 0)
+    else
+        b:SetPoint("TOPRIGHT", -36, -6)
+    end
+    b:SetHighlightTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight", "ADD")
+    b:SetScript("OnClick", function() NP.SetMinimized(not NP.db.window.minimized) end)
+    function b:UpdateLook(on)
+        local state = on and "BiggerButton" or "SmallerButton"
+        self:SetNormalTexture("Interface\\Buttons\\UI-Panel-" .. state .. "-Up")
+        self:SetPushedTexture("Interface\\Buttons\\UI-Panel-" .. state .. "-Down")
+    end
+    b:UpdateLook(false)
+    return b
 end
 
 function NP.CreateWindow()
     if frame then return end
     frame = CreateStyledFrame() or CreateFallbackFrame()
+    collapsedH = frame.NPCollapsedH or collapsedH
     frame:Hide()
     frame:SetFrameStrata("MEDIUM")
     frame:SetToplevel(true)
@@ -206,6 +379,7 @@ function NP.CreateWindow()
     end)
     frame:HookScript("OnHide", function(self)
         self:StopMovingOrSizing()
+        if NP.CancelRename then NP.CancelRename() end
         if editBox then
             editBox:ClearFocus()
             NP.SaveText()
@@ -213,6 +387,7 @@ function NP.CreateWindow()
     end)
 
     local inset = frame.NPInset
+    MakeRoomForTabs(frame, inset)
 
     -- Clicking empty space inside the text area puts the cursor at the end.
     local catcher = CreateFrame("Button", nil, inset)
@@ -225,14 +400,23 @@ function NP.CreateWindow()
         end
     end)
 
-    local ok, eb = pcall(CreateModernEditor, inset)
-    if not ok or not eb then
+    local ok, eb, box = pcall(CreateModernEditor, inset)
+    if ok and eb then
+        modernBox = box
+    else
         eb = CreateClassicEditor(inset)
     end
     editBox = eb
 
-    CreateResizeGrip(frame)
+    if NP.CreateTabs then
+        NP.CreateTabs(frame, inset, TAB_H - 2)
+    end
+
+    grip = CreateResizeGrip(frame)
+    minButton = CreateMinimizeButton(frame)
     ApplyPosition()
+    if NP.db.window.minimized then ApplyMinimized(true) end
+    NP.UpdateTitle()
 
     -- Escape closes the window (when the text box doesn't have focus).
     tinsert(UISpecialFrames, "NotePadFrame")

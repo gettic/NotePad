@@ -1,13 +1,14 @@
 # Note Pad
 
-A simple addon for **WoW Forever** to take notes. It opens a window with one text box. Whatever you type is saved, and all your characters on the account see the same note.
+A simple addon for **WoW Forever** to take notes. It opens a window with tabs, one note per tab. Whatever you type is saved, and all your characters on the account see the same notes.
 
-Version 0.0.1 (beta). This is a test version and has not been fully tested in the game yet. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
+Version 0.0.2 (beta). This is a test version and has not been fully tested in the game yet. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
 
 - [Install](#install)
 - [Open and close](#open-and-close)
 - [Writing notes](#writing-notes)
-- [Moving and resizing](#moving-and-resizing)
+- [Tabs](#tabs)
+- [Moving, resizing and minimizing](#moving-resizing-and-minimizing)
 - [Minimap button](#minimap-button)
 - [Slash commands](#slash-commands)
 - [For developers](#for-developers)
@@ -34,16 +35,32 @@ The window starts closed when you log in. It also works in combat.
 
 - Click into the text box to type. Clicking the empty space below your text puts the cursor at the end.
 - Enter starts a new line. There is no length limit. Long notes scroll.
-- Your note is saved as you type, so `/reload` or logging out never loses it.
+- Your notes are saved as you type, so `/reload` or logging out never loses them.
 - Opening the window doesn't start typing, so your movement keys still work until you click into the text.
 - Esc while typing stops typing. Press Esc again to close the window.
 
-## Moving and resizing
+## Tabs
+
+Each note has its own tab.
+
+| Action | What it does |
+|---|---|
+| Click a tab | Shows that note |
+| `[+]` | Adds a new note (up to 20) |
+| Double-click a tab | Renames the note |
+| Right-click a tab | Menu: Rename, Move left, Move right, Delete |
+
+- Deleting a note that has text asks first. An empty note is deleted at once.
+- The last note can't be deleted.
+- If you used version 0.0.1, your old note is now the first tab. Nothing is lost.
+
+## Moving, resizing and minimizing
 
 - Drag the window by its title bar or edge to move it.
 - Drag the corner at the bottom right to change its size (from 260 x 180 up to 1200 x 900).
-- The window's place and size are remembered.
-- `/np reset` puts the window back in the middle of the screen at its normal size.
+- The minimize button, next to the X, folds the window down to its title bar. Click it again to unfold.
+- The window's place, size and folded state are remembered, also after `/reload`.
+- `/np reset` puts the window back in the middle of the screen at its normal size, and unfolds it.
 
 ## Minimap button
 
@@ -58,7 +75,7 @@ Type `/np` or `/notepad`, followed by:
 | Command | What it does |
 |---|---|
 | (nothing) | Opens or closes the window |
-| `reset` | Moves the window back to the middle and its normal size |
+| `reset` | Moves the window back to the middle, to its normal size, and unfolds it |
 | `minimap` | Hides or shows the minimap button |
 | `help` | Lists the commands |
 
@@ -69,10 +86,11 @@ The addon lives in `NotePad\`. It uses no libraries and only the game's own pict
 | File | Job |
 |---|---|
 | `Core.lua` | Saved data, start-up and the slash commands |
-| `Window.lua` | The window, the text box, moving and resizing |
+| `Window.lua` | The window, the text box, moving, resizing and minimizing |
+| `Tabs.lua` | The tab row: add, switch, rename, move and delete notes |
 | `Minimap.lua` | The minimap button |
 
-Saved data is in `NotePadDB` (one for the whole account): the note's text, the window's place and size, and the minimap button's place and whether it is hidden.
+Saved data is in `NotePadDB` (one for the whole account): the notes (title and text each), which one is open, the window's place, size and folded state, and the minimap button's place and whether it is hidden.
 
 ## Licence
 
