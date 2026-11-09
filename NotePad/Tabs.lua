@@ -6,6 +6,7 @@ local PLUS_W = 32            -- [+] a bit wider than square: the red button art 
 local ART_ARROW_W, TEXT_ARROW_W = 24, 18
 local BLIZZ_TAB_H, BOX_TAB_H = 32, 24
 local MAX_TITLE = 24
+local RENAME_H = 18 -- rename box height, centred on the tab label
 local TOOLTIP_CHARS = 40     -- first line of the note shown in the tab tooltip
 local TAB_TEMPLATE = "PanelTopTabButtonTemplate"
 local TAB_PARTS = { "Text", "Left", "Middle", "Right", "LeftActive", "MiddleActive", "RightActive" }
@@ -58,6 +59,23 @@ end
 
 -- Blizzard tab look without PanelTemplates_SelectTab: that one calls Disable(),
 -- which would block double-click rename and the right-click menu on the open tab.
+local function num(v, default) return type(v) == "number" and v or default end
+
+-- Where a tab's label sits (offset of its centre from the tab's centre): for Blizzard
+-- tabs as in PanelTemplates_SelectTab / DeselectTab for top tabs (selected -4, not -9).
+local function LabelOffset(t, on)
+    if not t.NPBlizz then return 0, 0 end
+    local y = on and num(t.selectedTextY, -3) or num(t.deselectedTextY, 2)
+    if t.isTopTab ~= false then y = -y - 7 end -- our template is always a top tab
+    local x = on and num(t.selectedTextX, 0) or num(t.deselectedTextX, 0)
+    return x, y
+end
+
+-- The template's HIGHLIGHT layer is the unselected tab art (additive, alpha 0.4), so on
+-- the open tab it would show the unselected look on mouse-over. Blizzard avoids that by
+-- disabling the open tab; we keep it enabled, so we fade its highlight pieces instead.
+local HIGHLIGHT_PARTS = { "LeftHighlight", "MiddleHighlight", "RightHighlight" }
+
 local function SetBlizzTabSelected(t, on)
     t.Left:SetShown(not on)
     t.Middle:SetShown(not on)
@@ -65,15 +83,19 @@ local function SetBlizzTabSelected(t, on)
     t.LeftActive:SetShown(on)
     t.MiddleActive:SetShown(on)
     t.RightActive:SetShown(on)
+    for _, k in ipairs(HIGHLIGHT_PARTS) do
+        local h = t[k]
+        if type(h) == "table" and h.SetAlpha then
+            if not t.NPHighlightAlpha and h.GetAlpha then t.NPHighlightAlpha = num(h:GetAlpha(), 0.4) end
+            h:SetAlpha(on and 0 or (t.NPHighlightAlpha or 0.4))
+        end
+    end
     t:SetNormalFontObject(on and GameFontHighlightSmall or GameFontNormalSmall)
-    -- Label height as in PanelTemplates_SelectTab / DeselectTab for top tabs
-    -- (selected -4, not selected -9), without disabling the tab.
+    t.NPSelected = on
+    -- label height without disabling the tab
     local text = t.Text or t:GetFontString()
     if type(text) == "table" and text.SetPoint then
-        local function num(v, default) return type(v) == "number" and v or default end
-        local y = on and num(t.selectedTextY, -3) or num(t.deselectedTextY, 2)
-        if t.isTopTab ~= false then y = -y - 7 end -- our template is always a top tab
-        local x = on and num(t.selectedTextX, 0) or num(t.deselectedTextX, 0)
+        local x, y = LabelOffset(t, on)
         text:ClearAllPoints()
         text:SetPoint("CENTER", t, "CENTER", x, y)
     end
@@ -253,10 +275,14 @@ function NP.StartRename(i)
     if not note or not tab or not tab:IsShown() then return end
     if renaming then FinishRename(true) end
     renaming = note
+    -- exactly over the label: same height, same font, centred, so the name doesn't jump
+    local selected = (i == NP.db.current)
+    local _, y = LabelOffset(tab, selected)
     renameBox:ClearAllPoints()
-    renameBox:SetPoint("LEFT", tab, "LEFT", 3, 0)
-    renameBox:SetPoint("RIGHT", tab, "RIGHT", -3, 0)
-    renameBox:SetHeight(20)
+    renameBox:SetPoint("LEFT", tab, "LEFT", 3, y)
+    renameBox:SetPoint("RIGHT", tab, "RIGHT", -3, y)
+    renameBox:SetHeight(RENAME_H)
+    renameBox:SetFontObject((selected or not tab.NPBlizz) and GameFontHighlightSmall or GameFontNormalSmall)
     renameBox:SetText(note.title)
     renameBox:Show()
     renameBox:SetFocus()
@@ -274,6 +300,7 @@ local function CreateRenameBox(parent)
     eb:SetAutoFocus(false)
     eb:SetMaxLetters(MAX_TITLE)
     eb:SetTextInsets(5, 5, 0, 0)
+    if eb.SetJustifyH then eb:SetJustifyH("CENTER") end -- tab labels are centred too
     eb:SetFrameLevel(parent:GetFrameLevel() + 20)
     eb:Hide()
     eb:SetScript("OnEnterPressed", function() FinishRename(true) end)
