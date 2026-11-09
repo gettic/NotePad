@@ -8,7 +8,6 @@ local TAB_H = 26 -- room for the tab row above the text box
 local frame, editBox
 local modernBox, classicScroll -- whichever editor was built
 local grip, minButton
-local collapsedH = 34
 
 local function TemplateExists(name)
     if C_XMLUtil and C_XMLUtil.GetTemplateInfo then
@@ -70,7 +69,7 @@ end
 local function ApplyPosition()
     local win = NP.db.window
     local w, h = FullSize()
-    frame:SetSize(w, win.minimized and collapsedH or h)
+    frame:SetSize(w, h) -- callers fold it again with ApplyMinimized when needed
     frame:ClearAllPoints()
     frame:SetPoint(win.point, UIParent, win.relPoint, win.x, win.y)
 end
@@ -232,7 +231,77 @@ local function CreateFoldedBg(f)
     return bg
 end
 
+-- Folded bar = tallest title-bar button + FOLD_MARGIN above and below
+-- (24 px buttons -> 32 px). The buttons sit FOLD_MARGIN in from the top-right corner.
+local FOLD_MARGIN = 4
+
+local function FoldedHeight()
+    local bh = 0
+    for _, b in ipairs({ frame.NPClose, minButton }) do
+        local h = b and b:GetHeight()
+        if h and h > bh then bh = h end
+    end
+    if bh <= 0 then bh = 24 end
+    return math.ceil(bh + 2 * FOLD_MARGIN)
+end
+
+-- Remember a region's anchors (GetPoint) once, then let setPoints place it for folding.
+local function MoveForFold(region, setPoints)
+    if not region or region.NPSavedPoints then return end
+    local saved = {}
+    for i = 1, region:GetNumPoints() do
+        local p, rel, rp, x, y = region:GetPoint(i)
+        saved[i] = { p, rel or region:GetParent(), rp, x or 0, y or 0 }
+    end
+    region.NPSavedPoints = saved
+    region:ClearAllPoints()
+    setPoints(region, saved)
+end
+
+-- Put back exactly the anchors saved by MoveForFold.
+local function RestoreFromFold(region)
+    local saved = region and region.NPSavedPoints
+    if not saved then return end
+    region.NPSavedPoints = nil
+    region:ClearAllPoints()
+    for _, p in ipairs(saved) do
+        region:SetPoint(p[1], p[2], p[3], p[4], p[5])
+    end
+end
+
+local function RegionHeight(region, default)
+    local h = region:GetHeight()
+    if (not h or h <= 0) and region.GetStringHeight then h = region:GetStringHeight() end
+    if not h or h <= 0 then h = default end
+    return h
+end
+
+local function MoveButtonsAndTitle(on)
+    local title = frame.NPTitle or frame.TitleContainer or frame.TitleText
+    if not on then
+        RestoreFromFold(frame.NPClose)
+        RestoreFromFold(title)
+        return
+    end
+    local H = FoldedHeight()
+    MoveForFold(frame.NPClose, function(r)
+        r:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -FOLD_MARGIN, -FOLD_MARGIN)
+    end)
+    -- the minimize button is anchored to the close button, so it follows
+    if title then
+        local titleY = -math.floor((H - RegionHeight(title, 20)) / 2 + 0.5)
+        MoveForFold(title, function(r, saved)
+            for _, p in ipairs(saved) do
+                local y = p[5]
+                if p[1]:sub(1, 3) == "TOP" then y = titleY end -- keep x, centre vertically
+                r:SetPoint(p[1], p[2], p[3], p[4], y)
+            end
+        end)
+    end
+end
+
 local function SetFoldedLook(on)
+    MoveButtonsAndTitle(on)
     if frame.NPFoldedBg then -- styled frame: swap the metal border for the plain bar
         for _, part in ipairs(frame.NPBorderParts) do part:SetShown(not on) end
         frame.NPFoldedBg:SetShown(on)
@@ -245,9 +314,6 @@ local function SetFoldedLook(on)
             frame:SetBackdropColor(1, 1, 1, 1)
             frame:SetBackdropBorderColor(1, 1, 1, 1)
         end
-    end
-    if frame.NPTitle then
-        frame.NPTitle:SetPoint("TOP", 0, on and -11 or -16)
     end
 end
 
@@ -263,8 +329,9 @@ local function ApplyMinimized(on)
         inset:Hide()
         if NP.tabRow then NP.tabRow:Hide() end
         if grip then grip:Hide() end
-        frame:SetResizeBounds(MIN_W, collapsedH, MAX_W, MAX_H)
-        frame:SetHeight(collapsedH)
+        local foldedH = FoldedHeight()
+        frame:SetResizeBounds(MIN_W, foldedH, MAX_W, MAX_H)
+        frame:SetHeight(foldedH)
     else
         local _, h = FullSize()
         frame:SetResizeBounds(MIN_W, MIN_H, MAX_W, MAX_H)
@@ -324,7 +391,6 @@ local function CreateFallbackFrame()
     inset:SetPoint("TOPLEFT", 14, -36)
     inset:SetPoint("BOTTOMRIGHT", -14, 18)
     f.NPInset = inset
-    f.NPCollapsedH = 36 -- room for the 32 px close button
     f.NPTitleH = 34
     return f
 end
@@ -336,7 +402,6 @@ local function CreateStyledFrame()
     if ButtonFrameTemplate_HideButtonBar then ButtonFrameTemplate_HideButtonBar(f) end
     f.NPInset = f.Inset
     f.NPClose = f.CloseButton
-    f.NPCollapsedH = 28
     f.NPTitleH = 24
     -- Border/background pieces hidden while folded (only the ones that exist).
     f.NPBorderParts = {}
@@ -423,7 +488,6 @@ end
 function NP.CreateWindow()
     if frame then return end
     frame = CreateStyledFrame() or CreateFallbackFrame()
-    collapsedH = frame.NPCollapsedH or collapsedH
     frame:Hide()
     frame:SetFrameStrata("MEDIUM")
     frame:SetToplevel(true)
