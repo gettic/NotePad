@@ -2,7 +2,7 @@
 
 A simple addon for **WoW Forever** to take notes. It opens a window with tabs, one note per tab. Whatever you type is saved, and all your characters on the account see the same notes.
 
-Version 0.0.3 (beta). This is a test version and has not been fully tested in the game yet. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
+Version 0.1.0. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
 
 - [Install](#install)
 - [Open and close](#open-and-close)
@@ -15,7 +15,7 @@ Version 0.0.3 (beta). This is a test version and has not been fully tested in th
 
 ## Install
 
-1. Download the zip from the [latest release](https://github.com/gettic/NotePad/releases) (betas are marked "Pre-release").
+1. Download the zip from the [latest release](https://github.com/gettic/NotePad/releases).
 2. Unzip the `NotePad` folder into your game's `Interface\AddOns\` folder, so you have `Interface\AddOns\NotePad\NotePad_Forever.toc`.
 3. Restart the game, or type `/reload` if it was already running.
 
