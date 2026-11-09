@@ -227,6 +227,18 @@ end
 -- The folded bar is exactly the frame's rectangle. Preferred look: Blizzard's
 -- NineSlice tooltip layout (no corner offsets, so it stays inside the rect);
 -- else a tooltip-style backdrop; else a plain dark texture.
+-- Folded bar edges, measured from in-game screenshots (v0.0.3-beta.1, buttons as the
+-- reference, ~1.15 screen px per UI unit): the metal's visible outline is about 5 units
+-- above the frame top, 2 right of its right edge and 3 inside its left edge. The layout puts the corner pieces at
+-- x -8 / +4, y +16 from the frame, so the margins inside the corner art are:
+local FOLD_EDGE_LEFT  = 11 -- corner left edge -> visible metal left edge (8 + 3)
+local FOLD_EDGE_TOP   = 11 -- corner top edge  -> visible metal top edge (16 - 5)
+local FOLD_EDGE_RIGHT = 2  -- corner right edge -> visible metal right edge (4 - 2)
+local FOLD_EDGE_BOTTOM = 3 -- bar bottom this far above the frame bottom: same room below the buttons as above
+local LAYOUT_CORNER_TOP = 16 -- ButtonFrameTemplateNoPortrait: corner y offset (used if it can't be measured)
+-- No metal pieces (fallback): the beta.5 pads around the frame.
+local FALLBACK_PAD_LEFT, FALLBACK_PAD_TOP, FALLBACK_PAD_RIGHT = 2, 4, 5
+
 local function CreateFoldedBg(f)
     local bar = TryCreateFrame("Frame", nil, f, "NineSlicePanelTemplate")
     local ok = bar and NineSliceUtil and NineSliceUtil.ApplyLayoutByName
@@ -249,7 +261,21 @@ local function CreateFoldedBg(f)
             tex:SetColorTexture(unpack(NP.Color.barBg))
         end
     end
-    bar:SetAllPoints(f)
+    -- Same visible outer edges as the unfolded metal border: anchored to the metal's
+    -- own corner pieces (hidden textures still have positions), minus the see-through
+    -- margin inside the corner art. Fallback: fixed pads around the frame.
+    local ns = f.NineSlice
+    local tl = type(ns) == "table" and ns.TopLeftCorner
+    local tr = type(ns) == "table" and ns.TopRightCorner
+    if type(tl) == "table" and type(tr) == "table" then
+        bar:SetPoint("TOPLEFT", tl, "TOPLEFT", FOLD_EDGE_LEFT, -FOLD_EDGE_TOP)
+        bar:SetPoint("TOPRIGHT", tr, "TOPRIGHT", -FOLD_EDGE_RIGHT, -FOLD_EDGE_TOP)
+        bar.NPCorner = tl
+    else
+        bar:SetPoint("TOPLEFT", f, "TOPLEFT", -FALLBACK_PAD_LEFT, FALLBACK_PAD_TOP)
+        bar:SetPoint("TOPRIGHT", f, "TOPRIGHT", FALLBACK_PAD_RIGHT, FALLBACK_PAD_TOP)
+    end
+    bar:SetHeight(1) -- real height set when folding (UpdateFoldedBarHeight)
     bar:SetFrameLevel(f:GetFrameLevel()) -- below the title and buttons
     bar:Hide()
     return bar
@@ -295,6 +321,23 @@ local function FoldedHeight()
     return math.ceil(bottom + FOLD_MARGIN)
 end
 
+-- The folded bar's top follows the metal corner; its bottom sits FOLD_EDGE_BOTTOM
+-- above the frame bottom, so its height = (how far its top is above the frame) + folded height - that.
+local function UpdateFoldedBarHeight(foldedH)
+    local bar = frame.NPFoldedBg
+    if not bar then return end
+    local above, bottomUp
+    if bar.NPCorner then
+        local cornerTop, frameTop = bar.NPCorner:GetTop(), frame:GetTop()
+        local cornerAbove = (cornerTop and frameTop) and (cornerTop - frameTop) or 0
+        if cornerAbove <= 0 then cornerAbove = LAYOUT_CORNER_TOP end -- not laid out yet
+        above, bottomUp = cornerAbove - FOLD_EDGE_TOP, FOLD_EDGE_BOTTOM
+    else
+        above, bottomUp = FALLBACK_PAD_TOP, 0
+    end
+    bar:SetHeight(math.max(1, above + foldedH - bottomUp))
+end
+
 local function SetFoldedLook(on)
     if frame.NPFoldedBg then -- styled frame: swap the metal border for the plain bar
         for _, part in ipairs(frame.NPBorderParts) do part:SetShown(not on) end
@@ -326,6 +369,7 @@ local function ApplyMinimized(on)
         local foldedH = FoldedHeight()
         frame:SetResizeBounds(MIN_W, foldedH, MAX_W, MAX_H)
         frame:SetHeight(foldedH)
+        UpdateFoldedBarHeight(foldedH)
     else
         local _, h = FullSize()
         frame:SetResizeBounds(MIN_W, MIN_H, MAX_W, MAX_H)
@@ -517,6 +561,10 @@ function NP.CreateWindow()
         else
             lastTitleClick = now
         end
+    end)
+    frame:HookScript("OnShow", function(self)
+        -- measure the metal corner again now that the window is laid out
+        if NP.db.window.minimized then UpdateFoldedBarHeight(self:GetHeight()) end
     end)
     frame:HookScript("OnHide", function(self)
         self:StopMovingOrSizing()
