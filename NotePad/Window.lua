@@ -207,6 +207,9 @@ local FOLDED_BACKDROP = {
     insets = { left = 3, right = 3, top = 3, bottom = 3 },
 }
 
+-- Styled window: how far the plain folded bar reaches past the frame edges.
+local FOLD_PAD_LEFT, FOLD_PAD_TOP, FOLD_PAD_RIGHT = 2, 4, 5
+
 local function ColorFolded(f)
     if f.SetBackdropColor then
         f:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
@@ -225,49 +228,19 @@ local function CreateFoldedBg(f)
         tex:SetAllPoints()
         tex:SetColorTexture(0.05, 0.05, 0.05, 0.95)
     end
-    bg:SetAllPoints(f)
+    -- reaches past the frame like the metal border did, around the buttons
+    local pad = f.NPFoldPad
+    bg:SetPoint("TOPLEFT", f, "TOPLEFT", -pad.left, pad.top)
+    bg:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", pad.right, 0)
     bg:SetFrameLevel(f:GetFrameLevel()) -- below the title and buttons
     bg:Hide()
     return bg
 end
 
--- Folded bar = tallest title-bar button + FOLD_MARGIN above and below
--- (24 px buttons -> 32 px). The buttons sit FOLD_MARGIN in from the top-right corner.
+-- Folding never moves the frame, the buttons or the title. The frame gets just
+-- tall enough for its title-bar buttons and title + FOLD_MARGIN below
+-- (styled window: close button at the top edge, 24 px -> 28 px).
 local FOLD_MARGIN = 4
-
-local function FoldedHeight()
-    local bh = 0
-    for _, b in ipairs({ frame.NPClose, minButton }) do
-        local h = b and b:GetHeight()
-        if h and h > bh then bh = h end
-    end
-    if bh <= 0 then bh = 24 end
-    return math.ceil(bh + 2 * FOLD_MARGIN)
-end
-
--- Remember a region's anchors (GetPoint) once, then let setPoints place it for folding.
-local function MoveForFold(region, setPoints)
-    if not region or region.NPSavedPoints then return end
-    local saved = {}
-    for i = 1, region:GetNumPoints() do
-        local p, rel, rp, x, y = region:GetPoint(i)
-        saved[i] = { p, rel or region:GetParent(), rp, x or 0, y or 0 }
-    end
-    region.NPSavedPoints = saved
-    region:ClearAllPoints()
-    setPoints(region, saved)
-end
-
--- Put back exactly the anchors saved by MoveForFold.
-local function RestoreFromFold(region)
-    local saved = region and region.NPSavedPoints
-    if not saved then return end
-    region.NPSavedPoints = nil
-    region:ClearAllPoints()
-    for _, p in ipairs(saved) do
-        region:SetPoint(p[1], p[2], p[3], p[4], p[5])
-    end
-end
 
 local function RegionHeight(region, default)
     local h = region:GetHeight()
@@ -276,32 +249,58 @@ local function RegionHeight(region, default)
     return h
 end
 
-local function MoveButtonsAndTitle(on)
-    local title = frame.NPTitle or frame.TitleContainer or frame.TitleText
-    if not on then
-        RestoreFromFold(frame.NPClose)
-        RestoreFromFold(title)
-        return
+-- How far below the frame's top edge a region anchored to the top ends.
+local function BottomBelowTop(region, default)
+    local h = RegionHeight(region, default)
+    local p, _, rp, _, y = region:GetPoint(1)
+    if p and rp and p:sub(1, 3) == "TOP" and rp:sub(1, 3) == "TOP" then
+        return -(y or 0) + h
     end
-    local H = FoldedHeight()
-    MoveForFold(frame.NPClose, function(r)
-        r:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -FOLD_MARGIN, -FOLD_MARGIN)
-    end)
-    -- the minimize button is anchored to the close button, so it follows
-    if title then
-        local titleY = -math.floor((H - RegionHeight(title, 20)) / 2 + 0.5)
-        MoveForFold(title, function(r, saved)
-            for _, p in ipairs(saved) do
-                local y = p[5]
-                if p[1]:sub(1, 3) == "TOP" then y = titleY end -- keep x, centre vertically
-                r:SetPoint(p[1], p[2], p[3], p[4], y)
-            end
-        end)
+    return h
+end
+
+local function FoldedHeight()
+    local bottom = 0
+    local close = frame.NPClose
+    if close then
+        bottom = BottomBelowTop(close, 24)
+        if minButton then -- centred on the close button
+            local closeH = RegionHeight(close, 24)
+            bottom = math.max(bottom, bottom - closeH / 2 + RegionHeight(minButton, 24) / 2)
+        end
+    elseif minButton then
+        bottom = RegionHeight(minButton, 24)
+    end
+    if frame.NPTitle then bottom = math.max(bottom, BottomBelowTop(frame.NPTitle, 12)) end
+    if type(frame.TitleContainer) == "table" then bottom = math.max(bottom, BottomBelowTop(frame.TitleContainer, 20)) end
+    if bottom <= 0 then bottom = 24 end
+    return math.ceil(bottom + FOLD_MARGIN)
+end
+
+-- While folded the plain bar reaches past the frame (NPFoldPad); widen the
+-- screen clamp by the same amount so the bar can't go off-screen.
+-- SetClampRectInsets: negative left / positive right / positive top extend the clamp area.
+local function SetFoldClamp(on)
+    if not frame.SetClampRectInsets then return end
+    if on then
+        if frame.NPClampSaved then return end
+        local l, r, t, b = 0, 0, 0, 0
+        if frame.GetClampRectInsets then l, r, t, b = frame:GetClampRectInsets() end
+        frame.NPClampSaved = { l or 0, r or 0, t or 0, b or 0 }
+        local pad = frame.NPFoldPad
+        if pad then
+            local s = frame.NPClampSaved
+            frame:SetClampRectInsets(s[1] - pad.left, s[2] + pad.right, s[3] + pad.top, s[4])
+        end
+    elseif frame.NPClampSaved then
+        local s = frame.NPClampSaved
+        frame.NPClampSaved = nil
+        frame:SetClampRectInsets(s[1], s[2], s[3], s[4])
     end
 end
 
 local function SetFoldedLook(on)
-    MoveButtonsAndTitle(on)
+    SetFoldClamp(on)
     if frame.NPFoldedBg then -- styled frame: swap the metal border for the plain bar
         for _, part in ipairs(frame.NPBorderParts) do part:SetShown(not on) end
         frame.NPFoldedBg:SetShown(on)
@@ -411,6 +410,9 @@ local function CreateStyledFrame()
             f.NPBorderParts[#f.NPBorderParts + 1] = part
         end
     end
+    -- How far the folded bar reaches past the frame: the close button sits on the
+    -- top edge (TOPRIGHT +1, 0), so 4 px above it and 4 px right of it; 2 px on the left.
+    f.NPFoldPad = { left = FOLD_PAD_LEFT, top = FOLD_PAD_TOP, right = FOLD_PAD_RIGHT }
     f.NPFoldedBg = CreateFoldedBg(f)
     return f
 end
