@@ -53,6 +53,7 @@ Each note has its own tab.
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous note (works while typing) |
 
 - The tabs and page arrows look like the game's own.
+- A new note is named after its tab number ("Note 2" for the 2nd tab). If that name is taken, it gets the next free number.
 - Names can be up to 24 letters. A tab shows the whole name.
 - While renaming, click away to save the new name. Esc cancels.
 - When there are more tabs than fit, arrows appear. Click them, or use the mouse wheel on the tab row, to scroll.
@@ -64,7 +65,7 @@ Each note has its own tab.
 
 - Drag the window by its title bar or edge to move it.
 - Drag the corner at the bottom right to change its size (from 260 x 180 up to 1200 x 900).
-- The minimize button, next to the X, folds the window down to a dark title bar as wide as the window. Click it again to unfold.
+- The minimize button, next to the X, folds the window down to a dark title bar with a thin border, as wide as the window. Click it again to unfold.
 - You can also fold and unfold by double-clicking the title bar, or by right-clicking the minimap button.
 - The window's place, size and folded state are remembered, also after `/reload`.
 - `/np reset` puts the window back in the middle of the screen at its normal size, and unfolds it.

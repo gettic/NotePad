@@ -64,6 +64,8 @@ NP.Color = {
     tabPlainSel = { 0.35, 0.28, 0.05, 0.95 },
     barBg       = { 0.05, 0.05, 0.05, 0.95 },
     barBorder   = { 0.6, 0.6, 0.6, 1 },
+    edgeOuter   = { 0, 0, 0, 1 },          -- folded bar: outer 1 px line
+    edgeInner   = { 0.55, 0.42, 0.22, 1 }, -- folded bar: inner 1 px line (bronze, like the metal)
     red         = { 0.55, 0.05, 0.05, 1 },
     renameBg    = { 0, 0, 0, 1 },
     hover       = { 1, 1, 1, 0.08 },
@@ -103,13 +105,14 @@ local function TextHash(s)
     return #s .. ":" .. h
 end
 
--- Lowest "Note N" name that isn't used yet.
-function NP.NewNoteTitle(notes)
+-- "Note N" with N = the tab number the note gets (`pos`, default: a new last tab);
+-- if another note already has that name, the next free number above it.
+function NP.NewNoteTitle(notes, pos)
     local used = {}
     for _, n in ipairs(notes) do
         if n.title then used[n.title] = true end
     end
-    local i = 1
+    local i = math.max(1, math.floor(tonumber(pos) or (#notes + 1)))
     while used["Note " .. i] do i = i + 1 end
     return "Note " .. i
 end
@@ -142,8 +145,8 @@ local function NormalizeNotes(db)
             end
         end
     end
-    for _, n in ipairs(fixed) do
-        if not n.title then n.title = NP.NewNoteTitle(fixed) end
+    for i, n in ipairs(fixed) do
+        if not n.title then n.title = NP.NewNoteTitle(fixed, i) end
     end
     if #fixed == 0 then
         fixed[1] = { title = "Note 1", text = "" }
@@ -215,6 +218,8 @@ local function HandleSlash(msg)
         local n = tonumber(cmd)
         local count = #NP.db.notes
         if NP.db.notes[n] then
+            -- before and after opening, so nothing that runs while the window opens can switch it back
+            NP.ShowNote(n)
             NP.OpenWindow()
             NP.ShowNote(n)
         else

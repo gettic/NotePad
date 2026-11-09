@@ -66,6 +66,17 @@ local function SetBlizzTabSelected(t, on)
     t.MiddleActive:SetShown(on)
     t.RightActive:SetShown(on)
     t:SetNormalFontObject(on and GameFontHighlightSmall or GameFontNormalSmall)
+    -- Label height as in PanelTemplates_SelectTab / DeselectTab for top tabs
+    -- (selected -4, not selected -9), without disabling the tab.
+    local text = t.Text or t:GetFontString()
+    if type(text) == "table" and text.SetPoint then
+        local function num(v, default) return type(v) == "number" and v or default end
+        local y = on and num(t.selectedTextY, -3) or num(t.deselectedTextY, 2)
+        if t.isTopTab ~= false then y = -y - 7 end -- our template is always a top tab
+        local x = on and num(t.selectedTextX, 0) or num(t.deselectedTextX, 0)
+        text:ClearAllPoints()
+        text:SetPoint("CENTER", t, "CENTER", x, y)
+    end
 end
 
 local function SetTabSelected(t, on)
@@ -286,7 +297,7 @@ function NP.AddNote()
         return
     end
     NP.SaveText()
-    notes[#notes + 1] = { title = NP.NewNoteTitle(notes), text = "" }
+    notes[#notes + 1] = { title = NP.NewNoteTitle(notes, #notes + 1), text = "" }
     NP.ShowNote(#notes, true) -- already saved above
     NP.FocusText()
 end
@@ -573,8 +584,9 @@ end
 function NP.CreateTabs(f, inset, height)
     if row then return end
     row = CreateFrame("Frame", nil, f)
-    -- Blizzard tabs stand on the inset's top edge; the boxes keep a 2 px gap
-    local y = (height == BLIZZ_TAB_H) and 0 or 2
+    -- Blizzard tabs overlap the inset's top edge by 3 px (like Blizzard's own top tabs);
+    -- the boxes keep a 2 px gap
+    local y = (height == BLIZZ_TAB_H) and -3 or 2
     row:SetPoint("BOTTOMLEFT", inset, "TOPLEFT", 0, y)
     row:SetPoint("BOTTOMRIGHT", inset, "TOPRIGHT", 0, y)
     row:SetHeight(height)

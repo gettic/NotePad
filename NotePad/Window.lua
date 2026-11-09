@@ -5,7 +5,6 @@ local MIN_W, MIN_H = 260, 180
 local MAX_W, MAX_H = 1200, 900
 local TITLE_BAR_H = 24       -- double-click area at the top of the window
 local DOUBLE_CLICK_TIME = 0.3
-local FOLDED_LAYOUT = "TooltipDefaultLayout" -- Blizzard NineSlice layout of the folded bar (drawn inside the rect)
 
 local frame, editBox
 local modernBox, classicScroll -- whichever editor was built
@@ -36,10 +35,16 @@ end
 
 -- Save / restore ---------------------------------------------------------
 
+-- The text box is bound to one note TABLE (editorNote): whatever is in the box is only
+-- ever written back into the note it was loaded from, never into "the current index".
+-- So a stale or failed text swap can't copy one note's text into another.
+local editorNote
+
+function NP.EditorNote() return editorNote end
+
 function NP.SaveText()
-    if editBox and NP.db then
-        local note = NP.CurrentNote()
-        if note then note.text = editBox:GetText() or "" end
+    if editBox and editorNote then
+        editorNote.text = editBox:GetText() or ""
     end
 end
 
@@ -87,9 +92,8 @@ local function SetupEditBoxScripts(eb)
     if eb.SetMaxBytes then eb:SetMaxBytes(0) end
     eb:SetFontObject(ChatFontNormal)
     eb:HookScript("OnTextChanged", function(self, userInput)
-        if userInput then
-            local note = NP.CurrentNote()
-            if note then note.text = self:GetText() or "" end
+        if userInput and editorNote then
+            editorNote.text = self:GetText() or ""
         end
     end)
     eb:HookScript("OnEscapePressed", function(self) self:ClearFocus() end)
@@ -117,8 +121,10 @@ local function CreateModernEditor(parent)
 
     local eb = box:GetEditBox()
     SetupEditBoxScripts(eb)
-    local text = NP.CurrentNote().text
+    editorNote = NP.CurrentNote()
+    local text = editorNote.text
     if box.SetText then box:SetText(text) else eb:SetText(text) end
+    if (eb:GetText() or "") ~= text then eb:SetText(text) end
     return eb, box
 end
 
@@ -154,15 +160,24 @@ local function CreateClassicEditor(parent)
         end
     end)
     SetupEditBoxScripts(eb)
-    eb:SetText(NP.CurrentNote().text)
+    editorNote = NP.CurrentNote()
+    eb:SetText(editorNote.text)
     classicScroll = scroll
     return eb
 end
 
-local function SetEditorText(text)
+-- Load `note` into the text box and bind the box to it.
+local function LoadNoteIntoEditor(note)
+    local text = note.text or ""
+    editorNote = note -- bind first: anything the box reports from now on belongs to this note
     if modernBox and modernBox.SetText then
         modernBox:SetText(text)
     else
+        editBox:SetText(text)
+    end
+    -- The scrolling box's own SetText path may skip the swap (e.g. for an empty
+    -- text it can leave the old one in place); check and set it directly if so.
+    if (editBox:GetText() or "") ~= text then
         editBox:SetText(text)
     end
     editBox:SetCursorPosition(0)
@@ -189,13 +204,14 @@ function NP.UpdateTitle()
     end
 end
 
--- Open note `index`. skipSave: the text box holds a note that no longer exists (deleted).
+-- Open note `index`: the box, the title and the tabs always end up showing the same note.
+-- skipSave: the text box holds a note that no longer exists (deleted).
 function NP.ShowNote(index, skipSave)
     local db = NP.db
     if not db.notes[index] then index = 1 end
-    if not skipSave then NP.SaveText() end
+    if not skipSave then NP.SaveText() end -- into the note the box was loaded from
     db.current = index
-    if editBox then SetEditorText(db.notes[index].text) end
+    if editBox then LoadNoteIntoEditor(db.notes[index]) end
     NP.UpdateTitle()
     if NP.RefreshTabs then NP.RefreshTabs(true) end
 end
@@ -224,42 +240,48 @@ local function ColorFolded(f)
     end
 end
 
--- The folded bar is exactly the frame's rectangle. Preferred look: Blizzard's
--- NineSlice tooltip layout (no corner offsets, so it stays inside the rect);
--- else a tooltip-style backdrop; else a plain dark texture.
 -- Folded bar edges, measured from in-game screenshots (v0.0.3-beta.1, buttons as the
 -- reference, ~1.15 screen px per UI unit): the metal's visible outline is about 5 units
 -- above the frame top, 2 right of its right edge and 3 inside its left edge. The layout puts the corner pieces at
 -- x -8 / +4, y +16 from the frame, so the margins inside the corner art are:
 local FOLD_EDGE_LEFT  = 11 -- corner left edge -> visible metal left edge (8 + 3)
 local FOLD_EDGE_TOP   = 11 -- corner top edge  -> visible metal top edge (16 - 5)
-local FOLD_EDGE_RIGHT = 2  -- corner right edge -> visible metal right edge (4 - 2)
+local FOLD_EDGE_RIGHT = 1  -- corner right edge -> visible metal right edge (4 - 2), +1 px of air for the close button
 local FOLD_EDGE_BOTTOM = 3 -- bar bottom this far above the frame bottom: same room below the buttons as above
 local LAYOUT_CORNER_TOP = 16 -- ButtonFrameTemplateNoPortrait: corner y offset (used if it can't be measured)
 -- No metal pieces (fallback): the beta.5 pads around the frame.
 local FALLBACK_PAD_LEFT, FALLBACK_PAD_TOP, FALLBACK_PAD_RIGHT = 2, 4, 5
 
-local function CreateFoldedBg(f)
-    local bar = TryCreateFrame("Frame", nil, f, "NineSlicePanelTemplate")
-    local ok = bar and NineSliceUtil and NineSliceUtil.ApplyLayoutByName
-        and bar.SetCenterColor and bar.SetBorderColor
-        and pcall(NineSliceUtil.ApplyLayoutByName, bar, FOLDED_LAYOUT)
-    if ok then
-        bar:SetCenterColor(unpack(NP.Color.barBg))
-        bar:SetBorderColor(unpack(NP.Color.barBorder))
-        bar.NPNineSlice = true
+-- A 1 px line of `color` along one side of `bar`, `inset` px in from the edge.
+local function EdgeLine(bar, side, inset, color)
+    local t = bar:CreateTexture(nil, "BORDER")
+    t:SetColorTexture(unpack(color))
+    if side == "TOP" or side == "BOTTOM" then
+        local y = (side == "TOP") and -inset or inset
+        t:SetPoint(side .. "LEFT", bar, side .. "LEFT", inset, y)
+        t:SetPoint(side .. "RIGHT", bar, side .. "RIGHT", -inset, y)
+        if PixelUtil and PixelUtil.SetHeight then PixelUtil.SetHeight(t, 1) else t:SetHeight(1) end
     else
-        if bar then bar:Hide() end
-        bar = TryCreateFrame("Frame", nil, f, "BackdropTemplate")
-        if bar and bar.SetBackdrop then
-            bar:SetBackdrop(FOLDED_BACKDROP)
-            ColorFolded(bar)
-        else
-            bar = CreateFrame("Frame", nil, f)
-            local tex = bar:CreateTexture(nil, "BACKGROUND")
-            tex:SetAllPoints()
-            tex:SetColorTexture(unpack(NP.Color.barBg))
-        end
+        local x = (side == "LEFT") and inset or -inset
+        t:SetPoint("TOP" .. side, bar, "TOP" .. side, x, -inset)
+        t:SetPoint("BOTTOM" .. side, bar, "BOTTOM" .. side, x, inset)
+        if PixelUtil and PixelUtil.SetWidth then PixelUtil.SetWidth(t, 1) else t:SetWidth(1) end
+    end
+    return t
+end
+
+-- The folded bar: dark centre + own thin 2 px edge (1 px black outside, 1 px bronze
+-- inside), plain colour textures. Thin on purpose: the gap between the metal's outer
+-- edge and the title-bar buttons is only 2-3 px, so a thick border would run under them.
+local function CreateFoldedBg(f)
+    local bar = CreateFrame("Frame", nil, f)
+    local bg = bar:CreateTexture(nil, "BACKGROUND")
+    bg:SetPoint("TOPLEFT", 1, -1)
+    bg:SetPoint("BOTTOMRIGHT", -1, 1)
+    bg:SetColorTexture(unpack(NP.Color.barBg))
+    for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
+        EdgeLine(bar, side, 0, NP.Color.edgeOuter)
+        EdgeLine(bar, side, 1, NP.Color.edgeInner)
     end
     -- Same visible outer edges as the unfolded metal border: anchored to the metal's
     -- own corner pieces (hidden textures still have positions), minus the see-through
