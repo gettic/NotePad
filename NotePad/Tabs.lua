@@ -2,7 +2,7 @@
 local _, NP = ...
 
 local TAB_MIN_W, TAB_MAX_W, TAB_PAD, GAP = 50, 120, 20, 2
-local PLUS_W, ARROW_W = 24, 18
+local PLUS_W, ARROW_W = 32, 18 -- [+] a bit wider than square: the red button art is drawn wide
 local MAX_TITLE = 24
 
 local row, plusBtn, leftBtn, rightBtn, renameBox
@@ -81,6 +81,46 @@ local function MakeButton(parent, label)
     hl:SetPoint("BOTTOMRIGHT", -3, 3)
     hl:SetColorTexture(1, 1, 1, 0.08)
     Style(b, false)
+    return b
+end
+
+-- [+]: Blizzard's red panel button (UIPanelButtonTemplate); else the same art
+-- by file (UI-Panel-Button-Up/Down/Highlight); else a plain red button.
+local RED_ART = "Interface\\Buttons\\UI-Panel-Button-"
+
+local function ArtTexture(b, layer, kind)
+    local t = b:CreateTexture(nil, layer)
+    if t:SetTexture(RED_ART .. kind) == false then return nil end -- file missing
+    t:SetTexCoord(0, 0.625, 0, 0.6875)
+    t:SetAllPoints()
+    return t
+end
+
+local function MakePlusButton(parent)
+    local b = NP.TryCreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    if b then
+        b:SetText("+")
+        return b
+    end
+    b = CreateFrame("Button", nil, parent)
+    local up = ArtTexture(b, "ARTWORK", "Up")
+    if up then
+        b:SetNormalTexture(up)
+        local down = ArtTexture(b, "ARTWORK", "Down")
+        if down then b:SetPushedTexture(down) end
+        local hl = ArtTexture(b, "HIGHLIGHT", "Highlight")
+        if hl then hl:SetBlendMode("ADD") end
+    else
+        local bg = b:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        bg:SetColorTexture(0.55, 0.05, 0.05, 1)
+        local hl = b:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints()
+        hl:SetColorTexture(1, 1, 1, 0.12)
+    end
+    local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    fs:SetPoint("CENTER", 0, 1)
+    fs:SetText("+")
     return b
 end
 
@@ -199,8 +239,7 @@ local function DeleteNoteTable(note)
     end
 end
 
--- Ask before deleting a note that has text. Empty notes go at once.
--- The last note can't be deleted.
+-- Always ask before deleting (empty notes too). The last note can't be deleted.
 function NP.RequestDelete(i)
     local db = NP.db
     local note = db.notes[i]
@@ -210,16 +249,12 @@ function NP.RequestDelete(i)
         return
     end
     if i == db.current then NP.SaveText() end
-    if note.text == "" then
-        DeleteNoteTable(note)
-        return
-    end
     pendingDelete = note
     local shown
     if StaticPopupDialogs and StaticPopup_Show then
         if not StaticPopupDialogs.NOTEPAD_DELETE_NOTE then
             StaticPopupDialogs.NOTEPAD_DELETE_NOTE = {
-                text = "Delete note \"%s\"?\nIts text will be lost.",
+                text = "Are you sure you want to delete the note \"%s\"?\n%s",
                 button1 = YES or "Yes",
                 button2 = NO or "No",
                 OnAccept = function()
@@ -235,7 +270,8 @@ function NP.RequestDelete(i)
                 preferredIndex = 3,
             }
         end
-        local ok, dialog = pcall(StaticPopup_Show, "NOTEPAD_DELETE_NOTE", note.title)
+        local detail = (note.text == "") and "It is empty." or "Its text will be lost."
+        local ok, dialog = pcall(StaticPopup_Show, "NOTEPAD_DELETE_NOTE", note.title, detail)
         shown = ok and dialog
     end
     if not shown then
@@ -244,7 +280,7 @@ function NP.RequestDelete(i)
             pendingDelete = nil
             DeleteNoteTable(note)
         else
-            NP.Print("hold Shift and right-click the tab to delete \"" .. note.title .. "\".")
+            NP.Print("hold Shift and right-click the tab \"" .. note.title .. "\" to delete it.")
         end
     end
 end
@@ -325,7 +361,7 @@ function NP.RefreshTabs(ensureCurrent)
         Style(t, i == db.current)
     end
     for i = n + 1, #tabs do tabs[i]:Hide() end
-    Style(plusBtn, false, n >= NP.MAX_NOTES)
+    plusBtn:SetAlpha(n >= NP.MAX_NOTES and 0.4 or 1) -- dimmed at the most notes
 
     local rowW, rowH = row:GetWidth(), row:GetHeight()
     if not rowW or rowW <= 0 then return end
@@ -403,7 +439,7 @@ function NP.CreateTabs(f, inset, height)
     row:SetScript("OnShow", function() NP.RefreshTabs(true) end)
     NP.tabRow = row
 
-    plusBtn = MakeButton(row, "+")
+    plusBtn = MakePlusButton(row)
     plusBtn:SetSize(PLUS_W, height)
     plusBtn:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
     plusBtn:SetScript("OnClick", function() NP.AddNote() end)

@@ -199,8 +199,61 @@ end
 
 -- Minimize -----------------------------------------------------------------
 
+-- Simple dark title-bar look while folded (the metal border / dialog border
+-- has fixed-size corners that overlap when the frame is this short).
+local FOLDED_BACKDROP = {
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 14,
+    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+}
+
+local function ColorFolded(f)
+    if f.SetBackdropColor then
+        f:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
+        f:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+    end
+end
+
+local function CreateFoldedBg(f)
+    local bg = TryCreateFrame("Frame", nil, f, "BackdropTemplate")
+    if bg and bg.SetBackdrop then
+        bg:SetBackdrop(FOLDED_BACKDROP)
+        ColorFolded(bg)
+    else
+        bg = CreateFrame("Frame", nil, f)
+        local tex = bg:CreateTexture(nil, "BACKGROUND")
+        tex:SetAllPoints()
+        tex:SetColorTexture(0.05, 0.05, 0.05, 0.95)
+    end
+    bg:SetAllPoints(f)
+    bg:SetFrameLevel(f:GetFrameLevel()) -- below the title and buttons
+    bg:Hide()
+    return bg
+end
+
+local function SetFoldedLook(on)
+    if frame.NPFoldedBg then -- styled frame: swap the metal border for the plain bar
+        for _, part in ipairs(frame.NPBorderParts) do part:SetShown(not on) end
+        frame.NPFoldedBg:SetShown(on)
+    elseif frame.NPDialogBackdrop then -- fallback frame: swap its own backdrop
+        if on then
+            frame:SetBackdrop(FOLDED_BACKDROP)
+            ColorFolded(frame)
+        else
+            frame:SetBackdrop(frame.NPDialogBackdrop)
+            frame:SetBackdropColor(1, 1, 1, 1)
+            frame:SetBackdropBorderColor(1, 1, 1, 1)
+        end
+    end
+    if frame.NPTitle then
+        frame.NPTitle:SetPoint("TOP", 0, on and -11 or -16)
+    end
+end
+
 local function ApplyMinimized(on)
     local inset = frame.NPInset
+    SetFoldedLook(on)
     if on then
         if editBox then
             editBox:ClearFocus()
@@ -250,12 +303,13 @@ end
 
 local function CreateFallbackFrame()
     local f = CreateFrame("Frame", "NotePadFrame", UIParent, "BackdropTemplate")
-    f:SetBackdrop(BACKDROP_DIALOG_32_32 or {
+    f.NPDialogBackdrop = BACKDROP_DIALOG_32_32 or {
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
         edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
         tile = true, tileSize = 32, edgeSize = 32,
         insets = { left = 11, right = 12, top = 12, bottom = 11 },
-    })
+    }
+    f:SetBackdrop(f.NPDialogBackdrop)
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", 0, -16)
     title:SetPoint("LEFT", 40, 0)
@@ -270,7 +324,7 @@ local function CreateFallbackFrame()
     inset:SetPoint("TOPLEFT", 14, -36)
     inset:SetPoint("BOTTOMRIGHT", -14, 18)
     f.NPInset = inset
-    f.NPCollapsedH = 48
+    f.NPCollapsedH = 36 -- room for the 32 px close button
     f.NPTitleH = 34
     return f
 end
@@ -282,8 +336,17 @@ local function CreateStyledFrame()
     if ButtonFrameTemplate_HideButtonBar then ButtonFrameTemplate_HideButtonBar(f) end
     f.NPInset = f.Inset
     f.NPClose = f.CloseButton
-    f.NPCollapsedH = 34
+    f.NPCollapsedH = 28
     f.NPTitleH = 24
+    -- Border/background pieces hidden while folded (only the ones that exist).
+    f.NPBorderParts = {}
+    for _, key in ipairs({ "NineSlice", "Bg", "TopTileStreaks", "Background" }) do
+        local part = f[key]
+        if type(part) == "table" and part.SetShown then
+            f.NPBorderParts[#f.NPBorderParts + 1] = part
+        end
+    end
+    f.NPFoldedBg = CreateFoldedBg(f)
     return f
 end
 

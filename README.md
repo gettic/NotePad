@@ -46,11 +46,11 @@ Each note has its own tab.
 | Action | What it does |
 |---|---|
 | Click a tab | Shows that note |
-| `[+]` | Adds a new note (up to 20) |
+| Red `[+]` button | Adds a new note (up to 20) |
 | Double-click a tab | Renames the note |
 | Right-click a tab | Menu: Rename, Move left, Move right, Delete |
 
-- Deleting a note that has text asks first. An empty note is deleted at once.
+- Deleting a note always asks "Are you sure?" first, also when the note is empty.
 - The last note can't be deleted.
 - If you used version 0.0.1, your old note is now the first tab. Nothing is lost.
 
@@ -58,7 +58,7 @@ Each note has its own tab.
 
 - Drag the window by its title bar or edge to move it.
 - Drag the corner at the bottom right to change its size (from 260 x 180 up to 1200 x 900).
-- The minimize button, next to the X, folds the window down to its title bar. Click it again to unfold.
+- The minimize button, next to the X, folds the window down to a clean dark title bar. Click it again to unfold.
 - The window's place, size and folded state are remembered, also after `/reload`.
 - `/np reset` puts the window back in the middle of the screen at its normal size, and unfolds it.
 
