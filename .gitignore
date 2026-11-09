@@ -10,3 +10,10 @@ plans/
 *.pem
 *.key
 credentials*.json
+*.zip
+build/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+desktop.ini
