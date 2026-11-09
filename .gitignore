@@ -1,0 +1,12 @@
+CLAUDE.md
+.claude/
+ideas.md
+work status.md
+readme notes.md
+plans/
+.claude/usage.txt
+.claude/usage-override.txt
+.env*
+*.pem
+*.key
+credentials*.json
