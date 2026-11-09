@@ -1,7 +1,7 @@
 -- Note Pad: tab row (one tab per note: add, switch, rename, move, delete)
 local _, NP = ...
 
-local TAB_MIN_W, TAB_MAX_W, TAB_PAD, GAP = 50, 120, 20, 2
+local TAB_MIN_W, TAB_PAD, GAP = 50, 20, 2
 local PLUS_W, ARROW_W = 32, 18 -- [+] a bit wider than square: the red button art is drawn wide
 local MAX_TITLE = 24
 
@@ -357,7 +357,8 @@ function NP.RefreshTabs(ensureCurrent)
         local t = tabs[i] or CreateTab(i)
         t.NPIndex = i
         t.NPText:SetText(notes[i].title)
-        t.NPWidth = Clamp(math.floor(TextWidth(t.NPText) + TAB_PAD + 0.5), TAB_MIN_W, TAB_MAX_W)
+        -- as wide as the whole name; only capped to the tab area when laid out below
+        t.NPWidth = math.max(TAB_MIN_W, math.ceil(TextWidth(t.NPText) + TAB_PAD))
         Style(t, i == db.current)
     end
     for i = n + 1, #tabs do tabs[i]:Hide() end

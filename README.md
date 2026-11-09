@@ -50,6 +50,8 @@ Each note has its own tab.
 | Double-click a tab | Renames the note |
 | Right-click a tab | Menu: Rename, Move left, Move right, Delete |
 
+- Names can be up to 24 letters. A tab shows the whole name.
+- When there are more tabs than fit, arrows `<` `>` appear. Click them, or use the mouse wheel on the tab row, to scroll.
 - Deleting a note always asks "Are you sure?" first, also when the note is empty.
 - The last note can't be deleted.
 - If you used version 0.0.1, your old note is now the first tab. Nothing is lost.
