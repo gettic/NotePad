@@ -160,6 +160,7 @@ local function MakePlusButton(parent)
         return b
     end
     b = CreateFrame("Button", nil, parent)
+    b.NPOwnArt = true -- no disabled art: faded at the most notes
     local coords = { 0, 0.625, 0, 0.6875 }
     local up = ArtTexture(b, "ARTWORK", NP.Art.redButtonUp, coords)
     if up then
@@ -265,10 +266,6 @@ local function FinishRename(save)
 end
 NP.FinishRename = FinishRename
 
-function NP.CancelRename()
-    FinishRename(false)
-end
-
 function NP.StartRename(i)
     local note = NP.db.notes[i]
     local tab = tabs[i]
@@ -317,16 +314,66 @@ end
 
 -- Note actions -----------------------------------------------------------------
 
-function NP.AddNote()
+function NP.LimitText()
+    return NP.MAX_NOTES .. " notes is the most. Delete one to add another."
+end
+
+-- kind: nil = text note, "checklist" = checklist.
+function NP.AddNote(kind)
     local notes = NP.db.notes
     if #notes >= NP.MAX_NOTES then
-        NP.Print("you can have up to " .. NP.MAX_NOTES .. " notes.")
+        NP.Print(NP.LimitText())
         return
     end
     NP.SaveText()
-    notes[#notes + 1] = { title = NP.NewNoteTitle(notes, #notes + 1), text = "" }
+    local note
+    if kind == "checklist" then
+        note = { title = NP.NewNoteTitle(notes, #notes + 1, "List"), kind = "checklist", items = {} }
+        NP.UpdateChecklistMirror(note)
+    else
+        note = { title = NP.NewNoteTitle(notes, #notes + 1), text = "" }
+    end
+    notes[#notes + 1] = note
     NP.ShowNote(#notes, true) -- already saved above
     NP.FocusText()
+end
+
+-- Turn note i into a checklist (one line per text line) or back into a text note
+-- ("[x] " / "[ ] " in front of each line). Blank lines are left out.
+function NP.ConvertNote(i)
+    local note = NP.db.notes[i]
+    if not note then return end
+    NP.SaveText()
+    if NP.FinishLineEdit then NP.FinishLineEdit(true) end
+    if NP.IsChecklist(note) then
+        NP.UpdateChecklistMirror(note)
+        -- list unchanged since it was made from a note: that note's exact text comes back
+        -- (blank lines, spaces, "[X]" ...); else `text` already holds every line
+        if type(note.noteText) == "string" and note.noteMirror == note.mirrorHash then
+            note.text = note.noteText
+        end
+        note.kind, note.items, note.mirrorHash, note.noteText, note.noteMirror = nil, nil, nil, nil, nil
+    else
+        local items = NP.ChecklistTextToItems(note.text)
+        if #items > NP.CHECKLIST_MAX_LINES then
+            NP.Print("A checklist can have up to " .. NP.CHECKLIST_MAX_LINES .. " lines; \"" ..
+                NP.GoldText(note.title) .. "\" has " .. #items .. ".")
+            return
+        end
+        local original = note.text
+        note.kind, note.items = "checklist", items
+        NP.UpdateChecklistMirror(note)
+        if note.text ~= original then
+            -- the list can't show blank lines or spacing: keep the exact text until the list changes
+            note.noteText, note.noteMirror = original, note.mirrorHash
+            NP.Print("Turn it back into a note before changing the list to get the exact text back (blank lines, spacing).")
+        end
+    end
+    if i == NP.db.current then
+        NP.ShowNote(i, true) -- saved above
+    else
+        NP.RefreshTabs()
+    end
 end
 
 -- Ctrl+Tab / Ctrl+Shift+Tab: next / previous note, wrapping round.
@@ -358,14 +405,17 @@ local function DeleteNoteTable(note)
     if not i or #db.notes <= 1 then return end
     if renaming == note then FinishRename(false) end
     local wasCurrent = (i == db.current)
-    if not wasCurrent then NP.SaveText() end
+    NP.SaveText() -- the open note's text (if this is it, it's kept for /np undo)
+    if NP.FinishLineEdit then NP.FinishLineEdit(true) end
     table.remove(db.notes, i)
+    NP.PushDeletedNote(note, i)
     if wasCurrent then
         NP.ShowNote(math.min(i, #db.notes), true) -- the text box held the deleted note
     else
         if db.current > i then db.current = db.current - 1 end
         NP.RefreshTabs(true)
     end
+    NP.Print("Deleted \"" .. NP.GoldText(note.title) .. "\". Type /np undo to bring it back.")
 end
 
 -- Always ask before deleting (empty notes too). The last note can't be deleted.
@@ -374,18 +424,17 @@ function NP.RequestDelete(i)
     local note = db.notes[i]
     if not note then return end
     if #db.notes <= 1 then
-        NP.Print("the last note can't be deleted.")
+        NP.Print("The last note can't be deleted.")
         return
     end
     if i == db.current then NP.SaveText() end
-    pendingDelete = note
     local shown
     if StaticPopupDialogs and StaticPopup_Show then
         if not StaticPopupDialogs.NOTEPAD_DELETE_NOTE then
             StaticPopupDialogs.NOTEPAD_DELETE_NOTE = {
-                text = "Are you sure you want to delete the note \"%s\"?\n%s",
-                button1 = YES or "Yes",
-                button2 = NO or "No",
+                text = "Delete the note \"%s\"?\n%s",
+                button1 = DELETE or "Delete",
+                button2 = CANCEL or "Cancel",
                 OnAccept = function()
                     local n = pendingDelete
                     pendingDelete = nil
@@ -399,17 +448,20 @@ function NP.RequestDelete(i)
                 preferredIndex = 3,
             }
         end
-        local detail = (note.text == "") and "It is empty." or "Its text will be lost."
+        local detail = (note.text == "") and "It is empty." or "/np undo brings it back."
+        -- StaticPopup_Show cancels an open delete popup first (its OnCancel clears
+        -- pendingDelete), so the note to delete is set after it, never before.
         local ok, dialog = pcall(StaticPopup_Show, "NOTEPAD_DELETE_NOTE", NP.GoldText(note.title), detail)
         shown = ok and dialog
+        if shown then pendingDelete = note end
     end
     if not shown then
         -- No popup available: Shift + right-click is the deliberate way to delete.
+        pendingDelete = nil
         if IsShiftKeyDown() then
-            pendingDelete = nil
             DeleteNoteTable(note)
         else
-            NP.Print("hold Shift and right-click the tab \"" .. NP.GoldText(note.title) .. "\" to delete it.")
+            NP.Print("Hold Shift and right-click the tab \"" .. NP.GoldText(note.title) .. "\" to delete it.")
         end
     end
 end
@@ -439,6 +491,10 @@ local function OpenMenu(owner, i)
                 if j then NP.MoveNote(j, 1) end
             end)
             if idx >= #notes and right and right.SetEnabled then right:SetEnabled(false) end
+            root:CreateButton(NP.IsChecklist(note) and "Turn into note" or "Turn into checklist", function()
+                local j = IndexOf(note)
+                if j then NP.ConvertNote(j) end
+            end)
             local del = root:CreateButton("Delete", function()
                 local j = IndexOf(note)
                 if j then NP.RequestDelete(j) end
@@ -449,6 +505,21 @@ local function OpenMenu(owner, i)
     if not ok then
         NP.StartRename(i) -- no menu: right-click renames, Shift + right-click deletes
     end
+end
+
+-- Right-click on [+]: new note or new checklist. No MenuUtil: a checklist straight away
+-- (left-click already makes a note).
+local function OpenNewMenu(owner)
+    local ok = false
+    if MenuUtil and MenuUtil.CreateContextMenu then
+        ok = pcall(MenuUtil.CreateContextMenu, owner, function(_, root)
+            root:CreateButton("New note", function() NP.AddNote() end)
+            root:CreateButton("New checklist", function() NP.AddNote("checklist") end)
+            local label = NP.UndoLabel and NP.UndoLabel()
+            if label then root:CreateButton(label, function() NP.Undo() end) end
+        end)
+    end
+    if not ok then NP.AddNote("checklist") end
 end
 
 -- Tab row ------------------------------------------------------------------------
@@ -491,11 +562,22 @@ local function CreateTab(i)
         local note = NP.db.notes[self.NPIndex]
         if not note then return "", nil end
         local C = NP.Color
-        return note.title, {
-            { NP.NotePreview(note.text), C.white },
-            { "Double-click: rename", C.grey },
-            { "Right-click: rename, move, delete", C.grey },
+        local hints = {
+            { "Double-click: rename", C.hint },
+            { "Right-click: rename, move, delete", C.hint },
+            { "Shift + right-click: delete", C.hint },
+            { "Ctrl+Tab while typing: next note", C.hint },
         }
+        local lines
+        if NP.IsChecklist(note) then
+            local done, total = NP.ChecklistCounts(note)
+            local firstLine = note.items[1] and NP.NotePreview(NP.PlainText(note.items[1].text)) or "(empty)"
+            lines = { { ("Checklist: %d / %d done"):format(done, total), C.gold }, { firstLine, C.white } }
+        else
+            lines = { { NP.NotePreview(note.text), C.white } }
+        end
+        for _, h in ipairs(hints) do lines[#lines + 1] = h end
+        return note.title, lines
     end)
     tabs[i] = t
     return t
@@ -519,22 +601,38 @@ local function SizeTab(t, w, h)
     end
 end
 
+-- [+] disabled at the most notes: Blizzard's grey disabled button and a grey "+"
+-- (own art has no disabled look: faded instead). Its tooltip still shows (SetTooltip).
+local function UpdatePlus(n)
+    local on = n < NP.MAX_NOTES
+    plusBtn:SetEnabled(on)
+    local fs = plusBtn.GetFontString and plusBtn:GetFontString()
+    if fs then fs:SetTextColor(unpack(on and NP.Color.white or NP.Color.grey)) end
+    if plusBtn.NPOwnArt then plusBtn:SetAlpha(on and 1 or 0.4) end
+end
+
+local measured = -1 -- number of notes at the last full pass (names, widths, selection)
+
 -- Lay the tabs out. ensureCurrent: scroll so the open tab is visible.
-function NP.RefreshTabs(ensureCurrent)
+-- layoutOnly: only the row's width changed (resizing): reuse the measured widths.
+function NP.RefreshTabs(ensureCurrent, layoutOnly)
     if not row then return end
     local db = NP.db
     local notes = db.notes
     local n = #notes
 
-    for i = 1, n do
-        local t = tabs[i] or CreateTab(i)
-        t.NPIndex = i
-        t.NPText:SetText(notes[i].title)
-        t.NPWidth = MeasureTab(t) -- as wide as the whole name; capped to the tab area below
-        SetTabSelected(t, i == db.current)
+    if not (layoutOnly and measured == n) then
+        for i = 1, n do
+            local t = tabs[i] or CreateTab(i)
+            t.NPIndex = i
+            t.NPText:SetText(notes[i].title)
+            t.NPWidth = MeasureTab(t) -- as wide as the whole name; capped to the tab area below
+            SetTabSelected(t, i == db.current)
+        end
+        for i = n + 1, #tabs do tabs[i]:Hide() end
+        UpdatePlus(n)
+        measured = n
     end
-    for i = n + 1, #tabs do tabs[i]:Hide() end
-    plusBtn:SetAlpha(n >= NP.MAX_NOTES and 0.4 or 1) -- dimmed at the most notes
 
     local rowW, rowH = row:GetWidth(), row:GetHeight()
     if not rowW or rowW <= 0 then return end
@@ -619,7 +717,7 @@ function NP.CreateTabs(f, inset, height)
     row:SetHeight(height)
     row:EnableMouseWheel(true)
     row:SetScript("OnMouseWheel", function(_, delta) Scroll(-delta) end)
-    row:SetScript("OnSizeChanged", function() NP.RefreshTabs(true) end)
+    row:SetScript("OnSizeChanged", function() NP.RefreshTabs(true, true) end) -- every frame while resizing: layout only
     row:SetScript("OnShow", function() NP.RefreshTabs(true) end)
     NP.tabRow = row
 
@@ -627,16 +725,28 @@ function NP.CreateTabs(f, inset, height)
     plusBtn = MakePlusButton(row)
     plusBtn:SetSize(PLUS_W, btnH)
     plusBtn:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, math.floor((height - btnH) / 2)) -- centred in the row
-    plusBtn:SetScript("OnClick", function() NP.AddNote() end)
+    if plusBtn.RegisterForClicks then plusBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp") end
+    plusBtn:SetScript("OnClick", function(self, button)
+        if button == "RightButton" then
+            OpenNewMenu(self)
+        elseif IsShiftKeyDown() then
+            NP.AddNote("checklist")
+        else
+            NP.AddNote()
+        end
+    end)
     SetTooltip(plusBtn, function()
         if #NP.db.notes >= NP.MAX_NOTES then
-            return "New note", { { "You already have " .. NP.MAX_NOTES .. " notes (the most)." } }
+            return "New note", { { NP.LimitText() } }
         end
-        return "New note"
+        return "New note", {
+            { "Shift-click: new checklist", NP.Color.hint },
+            { "Right-click: more", NP.Color.hint },
+        }
     end)
 
     local arrowTip = function()
-        return "Scroll tabs", { { "(mouse wheel works too)", NP.Color.grey } }
+        return "More tabs", { { "Or use the mouse wheel", NP.Color.hint } }
     end
     rightBtn = MakeArrowButton(row, "Next")
     rightBtn:SetSize(rightBtn.NPWidth, btnH)

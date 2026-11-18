@@ -40,6 +40,12 @@ NP.Art = {
     biggerUp         = "Interface\\Buttons\\UI-Panel-BiggerButton-Up",
     biggerDown       = "Interface\\Buttons\\UI-Panel-BiggerButton-Down",
     minimizeHighlight = "Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight",
+    -- checklist (own tick box only when UICheckButtonTemplate is missing)
+    checkUp          = "Interface\\Buttons\\UI-CheckBox-Up",
+    checkDown        = "Interface\\Buttons\\UI-CheckBox-Down",
+    checkHighlight   = "Interface\\Buttons\\UI-CheckBox-Highlight",
+    checkMark        = "Interface\\Buttons\\UI-CheckBox-Check",
+    rowHighlight     = "Interface\\QuestFrame\\UI-QuestTitleHighlight",
 }
 
 -- All colours in one place: Blizzard's named colours where they exist, else the same values.
@@ -69,7 +75,12 @@ NP.Color = {
     red         = { 0.55, 0.05, 0.05, 1 },
     renameBg    = { 0, 0, 0, 1 },
     hover       = { 1, 1, 1, 0.08 },
+    rowHover    = { 1, 1, 1, 0.1 },        -- checklist row highlight when the quest-log art is missing
+    inputBg     = { 0, 0, 0, 0.5 },        -- checklist boxes without InputBoxTemplate
+    inputBorder = { 0.45, 0.45, 0.45, 1 },
 }
+NP.Color.hint = NP.Color.grey -- "Left-click: ..." lines in every tooltip
+NP.TICKED_ALPHA = 0.5 -- ticked checklist lines are dimmed (WoW text has no strike-through)
 
 -- Text in Blizzard's gold (NORMAL_FONT_COLOR).
 function NP.GoldText(s)
@@ -104,23 +115,147 @@ local function TextHash(s)
     end
     return #s .. ":" .. h
 end
+NP.TextHash = TextHash
 
 -- "Note N" with N = the tab number the note gets (`pos`, default: a new last tab);
 -- if another note already has that name, the next free number above it.
-function NP.NewNoteTitle(notes, pos)
+-- prefix: "Note" (default) or e.g. "List" for checklists.
+function NP.NewNoteTitle(notes, pos, prefix)
+    prefix = prefix or "Note"
     local used = {}
     for _, n in ipairs(notes) do
         if n.title then used[n.title] = true end
     end
     local i = math.max(1, math.floor(tonumber(pos) or (#notes + 1)))
-    while used["Note " .. i] do i = i + 1 end
-    return "Note " .. i
+    while used[prefix .. " " .. i] do i = i + 1 end
+    return prefix .. " " .. i
+end
+
+-- Checklists ---------------------------------------------------------------------
+-- A checklist is a note with kind = "checklist" and items = { { text = s, done = bool }, ... }.
+-- Its `text` always holds a readable copy ("[x] line" / "[ ] line"), so older versions of
+-- Note Pad (which only know `text`) still show the list. mirrorHash = TextHash of that copy:
+-- if `text` no longer matches it, an older version edited it and the text is recovered.
+
+NP.CHECKLIST_MAX_LINES = 200
+
+function NP.IsChecklist(note)
+    return type(note) == "table" and note.kind == "checklist"
+end
+
+-- One line of a checklist: no line breaks.
+function NP.CleanLine(s)
+    s = tostring(s or ""):gsub("[\r\n]+", " ")
+    return strtrim(s)
+end
+
+function NP.ChecklistItemsToText(items)
+    local out = {}
+    for i, it in ipairs(items) do
+        out[i] = (it.done and "[x] " or "[ ] ") .. it.text
+    end
+    return table.concat(out, "\n")
+end
+
+-- Text -> lines; "[x] " / "[ ] " at the start sets the tick; blank lines are skipped.
+function NP.ChecklistTextToItems(text)
+    local items = {}
+    for line in (tostring(text or "") .. "\n"):gmatch("([^\n]*)\n") do
+        line = line:gsub("\r", "")
+        local mark, rest = line:match("^%s*%[([xX ])%]%s?(.*)$")
+        local item
+        if mark then
+            item = { text = NP.CleanLine(rest), done = (mark ~= " ") }
+        else
+            item = { text = NP.CleanLine(line), done = false }
+        end
+        if item.text ~= "" then items[#items + 1] = item end
+    end
+    return items
+end
+
+-- Rewrite the readable copy after a change.
+function NP.UpdateChecklistMirror(note)
+    note.text = NP.ChecklistItemsToText(note.items)
+    note.mirrorHash = TextHash(note.text)
+end
+
+-- done, total
+function NP.ChecklistCounts(note)
+    local done, total = 0, 0
+    if NP.IsChecklist(note) and type(note.items) == "table" then
+        for _, it in ipairs(note.items) do
+            total = total + 1
+            if it.done then done = done + 1 end
+        end
+    end
+    return done, total
+end
+
+-- "|cff..|Hitem:..|h[Name]|h|r" -> "[Name]" (for tooltips and previews).
+function NP.PlainText(s)
+    s = tostring(s or "")
+    s = s:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|H.-|h(.-)|h", "%1")
+    return s
+end
+
+-- Repair one checklist; never drops a line that holds text. Returns text an older
+-- version typed into it (to be kept as a "Recovered note"), or nil.
+local function NormalizeChecklist(n)
+    local items = {}
+    local src = n.items
+    if type(src) == "table" then
+        local keys = {}
+        for k in pairs(src) do
+            if type(k) == "number" then keys[#keys + 1] = k end
+        end
+        table.sort(keys)
+        for _, k in ipairs(keys) do
+            local it = src[k]
+            local text, done
+            if type(it) == "string" or type(it) == "number" then
+                text, done = tostring(it), false
+            elseif type(it) == "table" then
+                text = (type(it.text) == "string" or type(it.text) == "number") and tostring(it.text) or ""
+                done = (it.done == true)
+            end
+            text = text and NP.CleanLine(text) or ""
+            if text ~= "" then items[#items + 1] = { text = text, done = done } end
+        end
+    end
+    local recovered
+    if #items == 0 and n.text ~= "" then
+        items = NP.ChecklistTextToItems(n.text) -- lines missing or broken: the copy is all we have
+    elseif n.text ~= "" and n.text ~= NP.ChecklistItemsToText(items) then
+        -- not our own copy (hash differs or missing): typed in by an older version, keep it
+        local hash = type(n.mirrorHash) == "string" and n.mirrorHash or nil
+        if hash == nil or TextHash(n.text) ~= hash then recovered = n.text end
+    end
+    n.items = items
+    NP.UpdateChecklistMirror(n)
+    -- the exact text of the note it was made from (see NP.ConvertNote): kept only as a pair
+    if type(n.noteText) ~= "string" or type(n.noteMirror) ~= "string" then
+        n.noteText, n.noteMirror = nil, nil
+    end
+    return recovered
+end
+
+-- `base`, or "base 2", "base 3" ... if a note already has that name.
+local function UniqueTitle(notes, base)
+    local used = {}
+    for _, n in ipairs(notes) do
+        if type(n) == "table" and n.title then used[n.title] = true end
+    end
+    if not used[base] then return base end
+    local i = 2
+    while used[base .. " " .. i] do i = i + 1 end
+    return base .. " " .. i
 end
 
 -- Make `db.notes` a clean array of { title = string, text = string }.
 -- Fixes bad entries key by key; never drops an entry that holds text.
 local function NormalizeNotes(db)
-    local fixed = {}
+    local fixed, recovered = {}, {}
     local src = db.notes
     if type(src) == "string" or type(src) == "number" then
         src = { tostring(src) }
@@ -141,12 +276,19 @@ local function NormalizeNotes(db)
                 if type(n.text) ~= "string" then n.text = "" end
                 if type(n.title) == "number" then n.title = tostring(n.title) end
                 if type(n.title) ~= "string" or n.title:match("^%s*$") then n.title = nil end
+                -- other `kind` values (from a newer version) are left alone and shown as notes
+                if n.kind == "checklist" then
+                    recovered[#recovered + 1] = NormalizeChecklist(n)
+                end
                 fixed[#fixed + 1] = n
             end
         end
     end
+    for _, text in ipairs(recovered) do
+        fixed[#fixed + 1] = { title = UniqueTitle(fixed, "Recovered note"), text = text }
+    end
     for i, n in ipairs(fixed) do
-        if not n.title then n.title = NP.NewNoteTitle(fixed, i) end
+        if not n.title then n.title = NP.NewNoteTitle(fixed, i, NP.IsChecklist(n) and "List" or nil) end
     end
     if #fixed == 0 then
         fixed[1] = { title = "Note 1", text = "" }
@@ -181,20 +323,187 @@ function NP.MigrateDB(db)
                 if n.text == v1Text then found = true break end
             end
             if not found then
-                db.notes[#db.notes + 1] = { title = "Recovered note", text = v1Text }
+                db.notes[#db.notes + 1] = { title = UniqueTitle(db.notes, "Recovered note"), text = v1Text }
             end
             db.v1Hash = hash
         end
     end
 end
 
+-- The window's saved place: only real anchor names and real numbers (a damaged file
+-- would otherwise make SetPoint fail while the addon loads).
+local POINTS = { TOPLEFT = true, TOP = true, TOPRIGHT = true, LEFT = true, CENTER = true, RIGHT = true,
+    BOTTOMLEFT = true, BOTTOM = true, BOTTOMRIGHT = true }
+local function Finite(v) return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge end
+
+local function RepairWindow(win)
+    local d = NP.defaults.window
+    if not POINTS[win.point] or not POINTS[win.relPoint] or not Finite(win.x) or not Finite(win.y) then
+        win.point, win.relPoint, win.x, win.y = d.point, d.relPoint, d.x, d.y
+    end
+    if not Finite(win.w) then win.w = d.w end
+    if not Finite(win.h) then win.h = d.h end
+end
+
+-- Recently deleted notes (for /np undo), saved so a /reload doesn't lose them:
+-- db.deleted = { { note = <note>, pos = n, seq = n }, ... }, oldest first, at most NP.UNDO_NOTES.
+NP.UNDO_NOTES = 3
+
+local function RepairDeleted(db)
+    local src = db.deleted
+    if type(src) ~= "table" then
+        db.deleted = nil
+        return
+    end
+    local keys = {}
+    for k in pairs(src) do
+        if type(k) == "number" then keys[#keys + 1] = k end
+    end
+    table.sort(keys)
+    local list = {}
+    for _, k in ipairs(keys) do
+        local e = src[k]
+        local n = type(e) == "table" and e.note
+        if type(n) == "table" then
+            if type(n.text) == "number" then n.text = tostring(n.text) end
+            if type(n.text) ~= "string" then n.text = "" end
+            if type(n.title) == "number" then n.title = tostring(n.title) end
+            if type(n.title) ~= "string" or n.title:match("^%s*$") then n.title = "Deleted note" end
+            local recovered = (n.kind == "checklist") and NormalizeChecklist(n) or nil
+            -- NaN / junk -> 1; endless or too big -> after the last note
+            local pos = (type(e.pos) == "number" and e.pos >= 1) and math.min(math.floor(e.pos), NP.MAX_NOTES + 1) or 1
+            local seq = Finite(e.seq) and e.seq or 0
+            list[#list + 1] = { note = n, pos = pos, seq = seq }
+            if recovered then
+                list[#list + 1] = { note = { title = "Recovered note", text = recovered }, pos = pos, seq = seq }
+            end
+        end
+    end
+    while #list > NP.UNDO_NOTES do table.remove(list, 1) end
+    db.deleted = (#list > 0) and list or nil
+end
+
+-- Defaults + repair + migration on any table (the self-test runs it on a copy).
+function NP.RepairDB(db)
+    ApplyDefaults(db, NP.defaults)
+    RepairWindow(db.window)
+    NP.MigrateDB(db)
+    RepairDeleted(db)
+    db.dbVersion = NP.DB_VERSION
+    return db
+end
+
+-- Undo ---------------------------------------------------------------------------
+-- Deleted notes (saved, see above) and removed checklist lines (this session only) share
+-- one order (seq): /np undo brings back the newest.
+
+local undoSeq = 0
+local lineUndo = {}         -- { seq =, note = <checklist>, lines = { { i = index, item = item }, ... } }
+local LINE_UNDO_MAX = 10
+
+local function NextSeq()
+    undoSeq = undoSeq + 1
+    return undoSeq
+end
+
+function NP.PushDeletedNote(note, pos)
+    local db = NP.db
+    db.deleted = db.deleted or {}
+    db.deleted[#db.deleted + 1] = { note = note, pos = pos, seq = NextSeq() }
+    while #db.deleted > NP.UNDO_NOTES do table.remove(db.deleted, 1) end
+end
+
+-- lines: { { i = original index, item = item }, ... } in ascending index order
+function NP.PushRemovedLines(note, lines)
+    if #lines == 0 then return end
+    lineUndo[#lineUndo + 1] = { seq = NextSeq(), note = note, lines = lines }
+    while #lineUndo > LINE_UNDO_MAX do table.remove(lineUndo, 1) end
+end
+
+local function IndexOfNote(note)
+    for i, n in ipairs(NP.db.notes) do
+        if n == note then return i end
+    end
+end
+
+-- What /np undo would bring back: "note", entry | "lines", entry | nil.
+local function UndoTop()
+    -- line entries whose checklist is gone (deleted, or turned into a note) can't come back
+    while #lineUndo > 0 do
+        local e = lineUndo[#lineUndo]
+        if IndexOfNote(e.note) and NP.IsChecklist(e.note) then break end
+        table.remove(lineUndo)
+    end
+    local deleted = NP.db.deleted
+    local d = deleted and deleted[#deleted]
+    local l = lineUndo[#lineUndo]
+    if d and (not l or d.seq >= l.seq) then return "note", d end
+    if l then return "lines", l end
+    return nil
+end
+
+function NP.CanUndo() return UndoTop() ~= nil end
+
+-- Short text for menus: what undo would bring back.
+function NP.UndoLabel()
+    local kind, e = UndoTop()
+    if kind == "note" then return "Bring back \"" .. e.note.title .. "\"" end
+    if kind == "lines" then
+        return #e.lines == 1 and "Bring back 1 line" or ("Bring back " .. #e.lines .. " lines")
+    end
+    return nil
+end
+
+function NP.Undo()
+    local db = NP.db
+    local kind, e = UndoTop()
+    if not kind then
+        NP.Print("Nothing to bring back.")
+        return false
+    end
+    if kind == "note" then
+        if #db.notes >= NP.MAX_NOTES then
+            NP.Print(NP.MAX_NOTES .. " notes is the most. Delete one to bring \"" .. NP.GoldText(e.note.title) .. "\" back.")
+            return false
+        end
+        table.remove(db.deleted)
+        if #db.deleted == 0 then db.deleted = nil end
+        NP.SaveText()
+        local pos = math.min(e.pos, #db.notes + 1)
+        table.insert(db.notes, pos, e.note)
+        if db.current >= pos then db.current = db.current + 1 end
+        if NP.OpenWindow then NP.OpenWindow() end
+        if NP.ShowNote then NP.ShowNote(pos) end
+        NP.Print("Brought back \"" .. NP.GoldText(e.note.title) .. "\".")
+        return true
+    end
+    -- lines
+    local note = e.note
+    local room = NP.CHECKLIST_MAX_LINES - #note.items
+    if room < #e.lines then
+        NP.Print("A checklist can have up to " .. NP.CHECKLIST_MAX_LINES .. " lines; \"" .. NP.GoldText(note.title) .. "\" is too full.")
+        return false
+    end
+    table.remove(lineUndo)
+    for _, l in ipairs(e.lines) do -- ascending: each goes back to its old place
+        table.insert(note.items, math.min(l.i, #note.items + 1), l.item)
+    end
+    NP.UpdateChecklistMirror(note)
+    local idx = IndexOfNote(note)
+    if NP.OpenWindow then NP.OpenWindow() end
+    if idx and NP.ShowNote then NP.ShowNote(idx) end
+    if NP.ChecklistRefresh then NP.ChecklistRefresh(note) end
+    NP.Print(#e.lines == 1 and ("Brought back 1 line in \"" .. NP.GoldText(note.title) .. "\".")
+        or ("Brought back " .. #e.lines .. " lines in \"" .. NP.GoldText(note.title) .. "\"."))
+    return true
+end
+
 function NP.InitDB()
     if type(NotePadDB) ~= "table" then NotePadDB = {} end
-    local db = NotePadDB
-    ApplyDefaults(db, NP.defaults)
-    NP.MigrateDB(db)
-    db.dbVersion = NP.DB_VERSION
-    NP.db = db
+    NP.db = NP.RepairDB(NotePadDB)
+    for _, e in ipairs(NP.db.deleted or {}) do
+        if e.seq > undoSeq then undoSeq = e.seq end
+    end
 end
 
 function NP.CurrentNote()
@@ -208,12 +517,17 @@ function NotePad_ToggleFromCompartment()
 end
 
 local function HandleSlash(msg)
-    local cmd = strtrim(strlower(msg or ""))
+    local cmd = strtrim(strlower(msg or "")):gsub("%s+", " ") -- "selftest  full" = "selftest full"
     if cmd == "" then
         NP.ToggleWindow()
     elseif cmd == "new" then
         NP.OpenWindow()
         NP.AddNote()
+    elseif cmd == "list" then
+        NP.OpenWindow()
+        NP.AddNote("checklist")
+    elseif cmd == "selftest" or cmd == "selftest full" then
+        if NP.SelfTest then NP.SelfTest:Start(cmd == "selftest full" and "full" or "quick") end
     elseif cmd:match("^%d+$") then
         local n = tonumber(cmd)
         local count = #NP.db.notes
@@ -223,28 +537,45 @@ local function HandleSlash(msg)
             NP.OpenWindow()
             NP.ShowNote(n)
         else
-            NP.Print("there is no note " .. n .. " (you have " .. count .. (count == 1 and " note)." or " notes)."))
+            -- the digits as typed (no "1e+20"), without leading zeros
+            local shown = cmd:gsub("^0+(%d)", "%1")
+            if #shown > 9 then shown = shown:sub(1, 6) .. "..." end
+            NP.Print("There is no note " .. shown .. ". You have " .. count .. (count == 1 and " note." or " notes."))
         end
+    elseif cmd == "undo" then
+        NP.Undo()
     elseif cmd == "reset" then
         NP.ResetWindow()
-        NP.Print("window reset to the middle of the screen.")
+        NP.Print("The window is back in the middle of the screen.")
     elseif cmd == "minimap" then
         NP.ToggleMinimapButton()
     else
-        NP.Print("/np - open or close the note pad (opens unfolded)")
+        if cmd ~= "help" then
+            NP.Print("I don't know \"" .. strtrim(msg or "") .. "\". Commands:")
+        end
+        NP.Print("/np - open or close Note Pad")
         NP.Print("/np new - add a new note")
-        NP.Print("/np <number> - open note number <number>, e.g. /np 2")
-        NP.Print("/np reset - move the window back to the middle (and unfold it)")
+        NP.Print("/np list - add a new checklist")
+        NP.Print("/np 2 - open note 2 (any number works)")
+        NP.Print("/np undo - bring back the last deleted note or checklist lines")
+        NP.Print("/np reset - put the window back in the middle")
         NP.Print("/np minimap - show or hide the minimap button")
-        NP.Print("Tabs: [+] adds a note, double-click a tab to rename, right-click for more; Ctrl+Tab / Ctrl+Shift+Tab switch notes while typing.")
-        NP.Print("Fold the window to its title bar: the fold button, double-click the title bar, or right-click the minimap button.")
-        NP.Print("Notes save as you type.")
+        NP.Print("/np selftest - check the addon and show a line to copy")
+        NP.Print("Tabs: [+] adds a note. Double-click a tab to rename it, right-click for more. Ctrl+Tab switches notes.")
+        NP.Print("To fold the window, double-click its title bar or right-click the minimap button.")
     end
 end
 
 SLASH_NOTEPAD1 = "/np"
 SLASH_NOTEPAD2 = "/notepad"
 SlashCmdList["NOTEPAD"] = HandleSlash
+
+-- Key Bindings > AddOns (Bindings.xml): one key to open or close the window.
+BINDING_HEADER_NOTEPAD = "Note Pad"
+BINDING_NAME_NOTEPAD_TOGGLE = "Open or close Note Pad"
+function NotePad_ToggleBinding()
+    if NP.ToggleWindow then NP.ToggleWindow() end
+end
 
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
@@ -257,5 +588,6 @@ events:SetScript("OnEvent", function(self, event, arg1)
         NP.CreateMinimapButton()
     elseif event == "PLAYER_LOGOUT" then
         if NP.SaveText then NP.SaveText() end
+        if NP.FinishLineEdit then NP.FinishLineEdit(true) end
     end
 end)

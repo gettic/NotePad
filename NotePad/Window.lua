@@ -5,9 +5,17 @@ local MIN_W, MIN_H = 260, 180
 local MAX_W, MAX_H = 1200, 900
 local TITLE_BAR_H = 24       -- double-click area at the top of the window
 local DOUBLE_CLICK_TIME = 0.3
+-- Scroll bars end above the 16 px resize grip in the bottom-right corner (ui review #1):
+-- MinimalScrollBar 14 px up from the text box bottom; the classic bar's down arrow hangs
+-- 16 px below its scroll frame, so that frame ends 12 px higher.
+local GRIP_ROOM = 14
+local CLASSIC_GRIP_ROOM = 12
+NP.GRIP_ROOM = GRIP_ROOM -- the checklist's bottom bar keeps clear of the grip too
 
 local frame, editBox
-local modernBox, classicScroll -- whichever editor was built
+local modernBox, modernBar, classicScroll -- whichever editor was built
+local modernParts = {} -- frames the modern editor made (hidden again if it fails half-way)
+local catcher -- click-to-focus area under the text box
 local grip, minButton
 local lastTitleClick -- GetTime() of the last single click on the title bar
 
@@ -41,6 +49,7 @@ end
 local editorNote
 
 function NP.EditorNote() return editorNote end
+function NP.EditorBox() return editBox end
 
 function NP.SaveText()
     if editBox and editorNote then
@@ -80,7 +89,13 @@ local function ApplyPosition()
     local w, h = FullSize()
     frame:SetSize(w, h) -- callers fold it again with ApplyMinimized when needed
     frame:ClearAllPoints()
-    frame:SetPoint(win.point, UIParent, win.relPoint, win.x, win.y)
+    -- RepairDB already checked the point names; if SetPoint still fails, use the defaults
+    if not pcall(frame.SetPoint, frame, win.point, UIParent, win.relPoint, win.x, win.y) then
+        local d = NP.defaults.window
+        win.point, win.relPoint, win.x, win.y = d.point, d.relPoint, d.x, d.y
+        frame:ClearAllPoints()
+        frame:SetPoint(win.point, UIParent, win.relPoint, win.x, win.y)
+    end
 end
 
 -- Text box -----------------------------------------------------------------
@@ -108,16 +123,19 @@ end
 -- Preferred: Blizzard's ScrollingEditBoxTemplate + MinimalScrollBar.
 local function CreateModernEditor(parent)
     local box = TryCreateFrame("Frame", nil, parent, "ScrollingEditBoxTemplate")
+    if box then modernParts[#modernParts + 1] = box end
     if not box or not box.GetEditBox then return nil end
     box:SetPoint("TOPLEFT", 6, -6)
     box:SetPoint("BOTTOMRIGHT", -22, 6)
 
     local bar = TryCreateFrame("EventFrame", nil, parent, "MinimalScrollBar")
+    if bar then modernParts[#modernParts + 1] = bar end
     if bar and ScrollUtil and ScrollUtil.RegisterScrollBoxWithScrollBar and box.GetScrollBox then
         bar:SetPoint("TOPLEFT", box, "TOPRIGHT", 6, 0)
-        bar:SetPoint("BOTTOMLEFT", box, "BOTTOMRIGHT", 6, 0)
+        bar:SetPoint("BOTTOMLEFT", box, "BOTTOMRIGHT", 6, GRIP_ROOM) -- end above the resize grip
         ScrollUtil.RegisterScrollBoxWithScrollBar(box:GetScrollBox(), bar)
     end
+    modernBar = bar
 
     local eb = box:GetEditBox()
     SetupEditBoxScripts(eb)
@@ -140,7 +158,7 @@ local function CreateClassicEditor(parent)
         end)
     end
     scroll:SetPoint("TOPLEFT", 6, -6)
-    scroll:SetPoint("BOTTOMRIGHT", -28, 6)
+    scroll:SetPoint("BOTTOMRIGHT", -28, 6 + CLASSIC_GRIP_ROOM) -- the bar's down arrow sits below this, above the grip
 
     local eb = CreateFrame("EditBox", "NotePadEditBox", scroll)
     eb:SetPoint("TOPLEFT")
@@ -166,8 +184,69 @@ local function CreateClassicEditor(parent)
     return eb
 end
 
+-- Show the text box (notes) or hide it (checklists show their own view in the inset).
+local function SetEditorShown(on)
+    local list = { modernBox, modernBar, classicScroll, catcher } -- may have holes: no ipairs
+    for i = 1, 4 do
+        if list[i] then list[i]:SetShown(on) end
+    end
+end
+
 -- Load `note` into the text box and bind the box to it.
+-- A checklist unbinds the box (nothing typed there can reach the checklist's text copy)
+-- and opens the checklist view instead.
+-- Cursor and scroll place per note, for this session only (weak keys: deleted notes go).
+local viewState = setmetatable({}, { __mode = "k" })
+
+local function ModernScrollBox()
+    return modernBox and modernBox.GetScrollBox and modernBox:GetScrollBox()
+end
+
+local function RememberPlace()
+    if not editorNote or not editBox then return end
+    local s = { cursor = editBox:GetCursorPosition() or 0 }
+    local sb = ModernScrollBox()
+    if sb and sb.GetScrollPercentage then
+        local ok, pct = pcall(sb.GetScrollPercentage, sb)
+        if ok and type(pct) == "number" then s.pct = pct end
+    elseif classicScroll then
+        s.scroll = classicScroll:GetVerticalScroll()
+    end
+    viewState[editorNote] = s
+end
+
+-- Back to where the note was left (or the top for a note not opened yet this session).
+local function RestorePlace(note, text)
+    local s = viewState[note]
+    editBox:SetCursorPosition(s and math.min(s.cursor, #text) or 0)
+    local sb = ModernScrollBox()
+    if sb then
+        if s and s.pct and sb.SetScrollPercentage then
+            -- the box lays the new text out first; scroll a frame later if this note is still open
+            local pct = s.pct
+            C_Timer.After(0, function()
+                if editorNote == note then pcall(sb.SetScrollPercentage, sb, pct) end
+            end)
+        elseif sb.ScrollToBegin then
+            sb:ScrollToBegin()
+        end
+    end
+    if classicScroll then classicScroll:SetVerticalScroll(s and s.scroll or 0) end
+end
+
 local function LoadNoteIntoEditor(note)
+    RememberPlace() -- the note the box holds now (also when it's reloaded: freshest place)
+    if NP.IsChecklist(note) then
+        editorNote = nil -- unbind first, then empty the box
+        editBox:ClearFocus()
+        if modernBox and modernBox.SetText then modernBox:SetText("") end
+        editBox:SetText("")
+        SetEditorShown(false)
+        if NP.ShowChecklist then NP.ShowChecklist(note) end
+        return
+    end
+    if NP.ShowChecklist then NP.ShowChecklist(nil) end
+    SetEditorShown(true)
     local text = note.text or ""
     editorNote = note -- bind first: anything the box reports from now on belongs to this note
     if modernBox and modernBox.SetText then
@@ -180,12 +259,7 @@ local function LoadNoteIntoEditor(note)
     if (editBox:GetText() or "") ~= text then
         editBox:SetText(text)
     end
-    editBox:SetCursorPosition(0)
-    if modernBox and modernBox.GetScrollBox then
-        local sb = modernBox:GetScrollBox()
-        if sb and sb.ScrollToBegin then sb:ScrollToBegin() end
-    end
-    if classicScroll then classicScroll:SetVerticalScroll(0) end
+    RestorePlace(note, text)
 end
 
 -- Notes ----------------------------------------------------------------------
@@ -218,7 +292,11 @@ end
 
 function NP.FocusText()
     if editBox and frame and frame:IsShown() and not NP.db.window.minimized then
-        editBox:SetFocus()
+        if editorNote == nil and NP.IsChecklist(NP.CurrentNote()) then
+            if NP.FocusChecklist then NP.FocusChecklist() end
+        else
+            editBox:SetFocus()
+        end
     end
 end
 
@@ -376,15 +454,51 @@ local function SetFoldedLook(on)
     end
 end
 
+-- Esc closes the open window, but not the folded bar (it is kept as a pinned reminder).
+-- We add one entry to UISpecialFrames once (tinsert, the usual way) and afterwards only
+-- change that one slot: "NotePadFrame" while unfolded, a name with no frame while folded
+-- (CloseSpecialWindows skips names that aren't frames). Nothing else in the list moves.
+local NO_ESC_NAME = "NotePadFrame_NoEsc" -- never a frame
+local escSlot
+
+local function FindEscSlot()
+    local list = UISpecialFrames
+    if escSlot and (list[escSlot] == "NotePadFrame" or list[escSlot] == NO_ESC_NAME) then return escSlot end
+    for i, name in pairs(list) do -- another addon removed an entry before ours: look it up again
+        if name == "NotePadFrame" or name == NO_ESC_NAME then return i end
+    end
+    return nil
+end
+
+local function SetEscCloses(on)
+    if type(UISpecialFrames) ~= "table" then return end
+    escSlot = FindEscSlot()
+    if not escSlot then
+        if not on then return end
+        tinsert(UISpecialFrames, "NotePadFrame")
+        escSlot = #UISpecialFrames
+        return
+    end
+    local want = on and "NotePadFrame" or NO_ESC_NAME
+    if UISpecialFrames[escSlot] ~= want then UISpecialFrames[escSlot] = want end
+end
+NP.EscClosesWindow = function()
+    if type(UISpecialFrames) ~= "table" then return false end
+    local i = FindEscSlot()
+    return i ~= nil and UISpecialFrames[i] == "NotePadFrame"
+end
+
 local function ApplyMinimized(on)
     local inset = frame.NPInset
     SetFoldedLook(on)
+    SetEscCloses(not on)
     if on then
         if editBox then
             editBox:ClearFocus()
             NP.SaveText()
         end
         if NP.FinishRename then NP.FinishRename(true) end
+        if NP.ClearChecklistFocus then NP.ClearChecklistFocus() end
         inset:Hide()
         if NP.tabRow then NP.tabRow:Hide() end
         if grip then grip:Hide() end
@@ -509,6 +623,30 @@ end
 
 -- Minimize button left of the close button: Blizzard's red fold/unfold button
 -- if the template exists, else our own button with the old smaller/bigger arrows.
+-- Tooltip on the fold button (and on the template's inner buttons, which take the mouse).
+local function FoldTooltip(owner)
+    GameTooltip:SetOwner(owner, "ANCHOR_TOP")
+    GameTooltip:SetText(NP.db.window.minimized and "Unfold" or "Fold")
+    local h = NP.Color.hint
+    GameTooltip:AddLine("Shrinks the window to its title bar.", h[1], h[2], h[3], true)
+    GameTooltip:AddLine("Double-click the title bar: fold / unfold", h[1], h[2], h[3], true)
+    GameTooltip:Show()
+end
+
+local function AddFoldTooltip(b)
+    if not (b and b.HookScript) then return end
+    b:HookScript("OnEnter", FoldTooltip)
+    b:HookScript("OnLeave", function() GameTooltip:Hide() end)
+end
+
+-- Same level as the close button: drawn above the border's title strip, like the X.
+local function MatchCloseLevel(b, close)
+    if close and close.GetFrameLevel and b.SetFrameLevel then
+        local lv = close:GetFrameLevel()
+        if type(lv) == "number" and lv > b:GetFrameLevel() then b:SetFrameLevel(lv) end
+    end
+end
+
 local function CreateMinimizeButton(f)
     local close = f.NPClose
     local mm = TryCreateFrame("Frame", nil, f, "MaximizeMinimizeButtonFrameTemplate")
@@ -518,12 +656,15 @@ local function CreateMinimizeButton(f)
         else
             mm:SetPoint("TOPRIGHT", -30, -2)
         end
+        MatchCloseLevel(mm, close)
         mm:SetOnMinimizedCallback(function() NP.SetMinimized(true) end)
         mm:SetOnMaximizedCallback(function() NP.SetMinimized(false) end)
         function mm:UpdateLook(on)
             -- automatic action, no callback: only switches which arrow is shown
             if on then self:Minimize(true, true) else self:Maximize(true, true) end
         end
+        AddFoldTooltip(rawget(mm, "MinimizeButton") or mm.MinimizeButton)
+        AddFoldTooltip(rawget(mm, "MaximizeButton") or mm.MaximizeButton)
         return mm
     end
 
@@ -534,8 +675,10 @@ local function CreateMinimizeButton(f)
     else
         b:SetPoint("TOPRIGHT", -36, -6)
     end
+    MatchCloseLevel(b, close)
     b:SetHighlightTexture(NP.Art.minimizeHighlight, "ADD")
     b:SetScript("OnClick", function() NP.SetMinimized(not NP.db.window.minimized) end)
+    AddFoldTooltip(b)
     function b:UpdateLook(on)
         self:SetNormalTexture(on and NP.Art.biggerUp or NP.Art.smallerUp)
         self:SetPushedTexture(on and NP.Art.biggerDown or NP.Art.smallerDown)
@@ -646,6 +789,7 @@ function NP.CreateWindow()
             editBox:ClearFocus()
             NP.SaveText()
         end
+        if NP.ClearChecklistFocus then NP.ClearChecklistFocus() end
     end)
 
     local inset = frame.NPInset
@@ -653,7 +797,7 @@ function NP.CreateWindow()
     MakeRoomForTabs(frame, inset, tabRowH + 2)
 
     -- Clicking empty space inside the text area puts the cursor at the end.
-    local catcher = CreateFrame("Button", nil, inset)
+    catcher = CreateFrame("Button", nil, inset)
     catcher:SetAllPoints(inset)
     catcher:SetFrameLevel(inset:GetFrameLevel()) -- stay below the text box
     catcher:SetScript("OnClick", function()
@@ -667,6 +811,9 @@ function NP.CreateWindow()
     if ok and eb then
         modernBox = box
     else
+        -- the modern editor failed half-way: hide what it made (it would show through the checklist)
+        for _, f in ipairs(modernParts) do pcall(f.Hide, f) end
+        modernBar = nil
         eb = CreateClassicEditor(inset)
     end
     editBox = eb
@@ -674,16 +821,34 @@ function NP.CreateWindow()
     if NP.CreateTabs then
         NP.CreateTabs(frame, inset, tabRowH)
     end
+    if NP.CreateChecklist then NP.CreateChecklist(inset) end
+    -- bind the box (or the checklist view) to the open note; the editors above loaded it
+    -- without knowing about checklists
+    LoadNoteIntoEditor(NP.CurrentNote())
 
     grip = CreateResizeGrip(frame)
     minButton = CreateMinimizeButton(frame)
     PlaceTitleLeft(frame, minButton)
     ApplyPosition()
+    -- Escape closes the window (when the text box doesn't have focus), not the folded bar.
+    SetEscCloses(true)
     if NP.db.window.minimized then ApplyMinimized(true) end
     NP.UpdateTitle()
 
-    -- Escape closes the window (when the text box doesn't have focus).
-    tinsert(UISpecialFrames, "NotePadFrame")
+    -- The close button: the template's own click goes through HideUIPanel; hide directly too
+    -- (our window is a plain frame, so this is fine in combat as well).
+    local close = frame.NPClose
+    if close and close.HookScript then
+        close:HookScript("OnClick", function()
+            if frame:IsShown() then frame:Hide() end
+        end)
+    end
+end
+
+-- For tests and the self-test: the window's own parts.
+function NP.WindowWidgets()
+    return { frame = frame, editBox = editBox, modernBox = modernBox, modernBar = modernBar,
+        classicScroll = classicScroll, grip = grip, fold = minButton, close = frame and frame.NPClose }
 end
 
 -- Is the cursor in the top TITLE_BAR_H px of the window?

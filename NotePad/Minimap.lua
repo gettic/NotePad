@@ -73,10 +73,12 @@ function NP.CreateMinimapButton()
     button:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Note Pad")
-        local w = NP.Color.white
-        GameTooltip:AddLine("Left-click: open / close", w[1], w[2], w[3])
-        GameTooltip:AddLine("Right-click: fold / unfold", w[1], w[2], w[3])
-        GameTooltip:AddLine("Drag: move this button", w[1], w[2], w[3])
+        local w, h = NP.Color.white, NP.Color.hint
+        local note, count = NP.CurrentNote(), #NP.db.notes
+        GameTooltip:AddLine(("%s (%d %s)"):format(note.title, count, count == 1 and "note" or "notes"), w[1], w[2], w[3])
+        GameTooltip:AddLine("Left-click: open / close", h[1], h[2], h[3])
+        GameTooltip:AddLine("Right-click: fold / unfold", h[1], h[2], h[3])
+        GameTooltip:AddLine("Drag: move this button", h[1], h[2], h[3])
         GameTooltip:Show()
     end)
     button:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -91,10 +93,10 @@ function NP.ToggleMinimapButton()
     mm.hide = not mm.hide
     if mm.hide then
         button:Hide()
-        NP.Print("minimap button hidden. /np minimap shows it again.")
+        NP.Print("Minimap button hidden. /np minimap shows it again.")
     else
         button:Show()
         UpdatePosition()
-        NP.Print("minimap button shown.")
+        NP.Print("Minimap button shown.")
     end
 end
