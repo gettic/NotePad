@@ -109,12 +109,49 @@ end
 
 -- Text box -----------------------------------------------------------------
 
+-- Our font stays on the text box, whatever puts another one there: the template (its `fontName`
+-- on every SetText), another addon that re-skins edit boxes, or the client (beta.2 self-test:
+-- "FONT textBox: not the Note Pad font"). Only our own box is hooked, never a Blizzard function.
+local fontGuard = false
+
+local function EditorFont() return NP.EditFont and NP.EditFont() or ChatFontNormal end
+
+-- Same font object, or one that draws the same (file, size, outline).
+local function SameFont(eb, font)
+    if eb:GetFontObject() == font then return true end
+    if type(font) ~= "table" or not font.GetFont then return false end
+    local p1, s1, f1 = eb:GetFont()
+    local p2, s2, f2 = font:GetFont()
+    return p1 ~= nil and p1 == p2 and s1 == s2 and (f1 or "") == (f2 or "")
+end
+
+local function EnsureEditorFont(eb)
+    eb = eb or editBox
+    if not eb or fontGuard then return end
+    local font = EditorFont()
+    eb.fontName = font -- the scrolling template re-applies this on every SetText
+    if not SameFont(eb, font) then
+        fontGuard = true
+        pcall(eb.SetFontObject, eb, font)
+        fontGuard = false
+    end
+end
+NP.EnsureEditorFont = EnsureEditorFont
+
+local function GuardEditorFont(eb)
+    local function Back(self) if not fontGuard then EnsureEditorFont(self) end end
+    hooksecurefunc(eb, "SetFontObject", Back) -- post-hooks on our own frame's methods
+    if eb.SetFont then hooksecurefunc(eb, "SetFont", Back) end
+    eb:HookScript("OnShow", Back)
+end
+
 local function SetupEditBoxScripts(eb)
     eb:SetMultiLine(true)
     eb:SetAutoFocus(false)
     eb:SetMaxLetters(0)
     if eb.SetMaxBytes then eb:SetMaxBytes(0) end
-    eb:SetFontObject(NP.EditFont and NP.EditFont() or ChatFontNormal)
+    eb:SetFontObject(EditorFont())
+    GuardEditorFont(eb)
     eb:HookScript("OnTextChanged", function(self, userInput)
         if userInput and editorNote then
             editorNote.text = self:GetText() or ""
@@ -150,13 +187,14 @@ local function CreateModernEditor(parent)
     SetupEditBoxScripts(eb)
     -- the template sets its own font (`fontName`) again on every SetText: point it at ours, and
     -- let the box re-measure its scroll steps for that font
-    local font = NP.EditFont and NP.EditFont() or ChatFontNormal
+    local font = EditorFont()
     eb.fontName = font
     if box.SetFontObject then pcall(box.SetFontObject, box, font) end
     editorNote = NP.CurrentNote()
     local text = editorNote.text
     if box.SetText then box:SetText(text) else eb:SetText(text) end
     if (eb:GetText() or "") ~= text then eb:SetText(text) end
+    EnsureEditorFont(eb)
     return eb, box
 end
 
@@ -273,6 +311,7 @@ local function LoadNoteIntoEditor(note)
     if (editBox:GetText() or "") ~= text then
         editBox:SetText(text)
     end
+    EnsureEditorFont()
     RestorePlace(note, text)
 end
 
@@ -280,7 +319,7 @@ end
 -- scrolling box re-measures (which jumps to the top), so put its scroll place back.
 function NP.ReapplyEditorFont()
     if not editBox then return end
-    local font = NP.EditFont and NP.EditFont() or ChatFontNormal
+    local font = EditorFont()
     if modernBox and modernBox.SetFontObject then
         local sb, pct = ModernScrollBox(), nil
         if sb and sb.GetScrollPercentage then
@@ -293,6 +332,7 @@ function NP.ReapplyEditorFont()
     else
         editBox:SetFontObject(font)
     end
+    EnsureEditorFont()
 end
 
 -- Notes ----------------------------------------------------------------------

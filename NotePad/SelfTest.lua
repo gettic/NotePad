@@ -415,10 +415,31 @@ local function CheckSettings()
     end
 
     local ww = NP.WindowWidgets and NP.WindowWidgets() or {}
+    -- the text box draws with our font: compare what is drawn (file, size), and name what was found
+    -- (another addon may re-skin edit boxes; the line then says which font it put there)
     if fonts.edit and ww.editBox then
         Count()
         local st, fo = Read(ww.editBox, "GetFontObject")
-        if st == "ok" and fo ~= fonts.edit then Problem("FONT", "textBox", "not the Note Pad font") end
+        local s2, path, h = Read(ww.editBox, "GetFont")
+        local s3, wantPath, wantH = Read(fonts.edit, "GetFont")
+        if st == "secret" or s2 == "secret" or s3 == "secret" then
+            Skip("textBox", "font (secret)")
+        else
+            local foName = "-"
+            if type(fo) == "table" then
+                local s4, n = Read(fo, "GetName")
+                foName = (fo == fonts.edit) and "NotePadEditFont" or (s4 == "ok" and n) or "unnamed"
+            end
+            local function File(p) return tostring(p or "?"):match("([^\\/]+)$") or "?" end
+            local function Size(v) return type(v) == "number" and ("%g"):format(math.floor(v * 10 + 0.5) / 10) or "?" end
+            local found = ("%s %s (%s)"):format(File(path), Size(h), tostring(foName))
+            Info("textBox font " .. found)
+            local same = s2 == "ok" and s3 == "ok" and path ~= nil and tostring(path):lower() == tostring(wantPath):lower()
+                and type(h) == "number" and type(wantH) == "number" and math.abs(h - wantH) < 0.6
+            if not same then
+                Problem("FONT", "textBox", ("%s, want %s %s"):format(found, File(wantPath), Size(wantH)))
+            end
+        end
     end
 
     if ww.frame then
