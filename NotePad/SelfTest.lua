@@ -1,7 +1,8 @@
 -- Note Pad: /np selftest [full]. From the wowforever-kit starter (.claude\tools\selftest\GUIDE.md).
 -- The addon checks itself in the running game: the window, the tab row, the [+] button and the
 -- checklist view are shown, have a position and a size, are on screen and aren't covered; their art
--- loads; the saved data survives NP.RepairDB (on copies only); the Shift-click link hook is in place.
+-- loads; the saved data survives NP.RepairDB (on copies only); the Shift-click link hook is in place;
+-- the settings (text size fonts, opacity, lock, checklist row height, the cog and its menu) are applied.
 -- "full" also shows a throwaway checklist (never saved) to check its rows, tick box and item icon.
 -- Safety: reads only. It shows and hides only the addon's own frames and puts them back; no Blizzard
 -- function is replaced or hooked; nothing protected. Every value read from a frame is checked with
@@ -292,10 +293,17 @@ function ST.MainParts()
     local w = NP.TabWidgets and NP.TabWidgets() or {}
     local ww = NP.WindowWidgets and NP.WindowWidgets() or {}
     local parts = { { name = "window", obj = Win() }, { name = "fold", obj = ww.fold } }
+    local cog = ww.settings
+    if cog then -- the settings cog (folded too); its atlas must load
+        parts[#parts + 1] = { name = "settings", obj = cog, top = true,
+            art = (type(cog) == "table" and cog.NPLook == "atlas") and { "Icon" } or nil }
+    end
     if not Folded() then
         parts[#parts + 1] = { name = "tabRow", obj = w.row }
         parts[#parts + 1] = { name = "plus", obj = w.plus }
-        parts[#parts + 1] = { name = "grip", obj = ww.grip }
+        if not (NP.db.settings and NP.db.settings.locked) then -- locked: the grip is hidden on purpose
+            parts[#parts + 1] = { name = "grip", obj = ww.grip }
+        end
     end
     return parts
 end
@@ -373,10 +381,111 @@ local function CheckGrip()
     end
 end
 
+-- Settings (Beta A): saved values in range, the font objects at the set size, the text box using
+-- ours, window opacity, lock (grip hidden), checklist row height, and the menu builds (dry run on a
+-- stand-in, nothing is shown or changed).
+local function CheckSettings()
+    local s = NP.db and NP.db.settings
+    Count()
+    if type(s) ~= "table" then return Problem("SET", "settings", "missing") end
+    local size, alpha = s.fontSize, s.alpha
+    if not (type(size) == "number" and size >= NP.FONT_MIN and size <= NP.FONT_MAX) then
+        return Problem("SET", "fontSize", "out of range")
+    end
+    Count()
+    if not (type(alpha) == "number" and alpha >= NP.ALPHA_MIN and alpha <= 1) then
+        return Problem("SET", "alpha", "out of range")
+    end
+
+    local fonts = NP.Fonts or {}
+    for _, f in ipairs({ { "editFont", fonts.edit, size }, { "listFont", fonts.list, size - 2 } }) do
+        Count()
+        if type(f[2]) ~= "table" then
+            Problem("FONT", f[1], "missing")
+        else
+            local st, path, h = Read(f[2], "GetFont")
+            if st == "secret" then
+                Skip(f[1], "(secret)")
+            elseif st ~= "ok" or not path then
+                Problem("FONT", f[1], "no font file")
+            elseif type(h) == "number" and math.abs(h - f[3]) > 1 then
+                Problem("FONT", f[1], ("size %.1f, want %d"):format(h, f[3]))
+            end
+        end
+    end
+
+    local ww = NP.WindowWidgets and NP.WindowWidgets() or {}
+    if fonts.edit and ww.editBox then
+        Count()
+        local st, fo = Read(ww.editBox, "GetFontObject")
+        if st == "ok" and fo ~= fonts.edit then Problem("FONT", "textBox", "not the Note Pad font") end
+    end
+
+    if ww.frame then
+        Count()
+        local st, a = Read(ww.frame, "GetAlpha")
+        if st == "ok" and type(a) == "number" and math.abs(a - 1) > 0.01 and math.abs(a - alpha) > 0.01 then
+            Problem("SET", "opacity", ("window %.2f, setting %.2f"):format(a, alpha))
+        end
+    end
+
+    -- "open after login" bookkeeping: the saved open flag matches the window (the run has it open)
+    if ww.frame and not NP.loggingOut then
+        Count()
+        local st, open = Read(ww.frame, "IsShown")
+        if st == "ok" and (NP.db.window.shown and true or false) ~= (open and true or false) then
+            Problem("SET", "shown", "saved open flag doesn't match the window")
+        end
+    end
+
+    if ww.grip and not Folded() then
+        Count()
+        local st, shown = Read(ww.grip, "IsShown")
+        if st == "ok" and (shown and true or false) == (s.locked and true or false) then
+            Problem("SET", "lock", s.locked and "grip shown while locked" or "grip hidden while unlocked")
+        end
+    end
+
+    if NP.ChecklistRowHeight then
+        Count()
+        local want = math.max(22, size - 2 + 10)
+        if NP.ChecklistRowHeight() ~= want then
+            Problem("SET", "rowHeight", ("%s, want %d"):format(tostring(NP.ChecklistRowHeight()), want))
+        end
+    end
+
+    -- the menu builds: 9 text sizes, 6 opacities, 2 tick boxes
+    if NP.SettingsMenuGenerator then
+        Count()
+        local n = { radio = 0, check = 0 }
+        local desc
+        desc = {
+            CreateTitle = function() end, CreateDivider = function() end,
+            CreateButton = function() return desc end,
+            CreateRadio = function() n.radio = n.radio + 1 end,
+            CreateCheckbox = function() n.check = n.check + 1 end,
+        }
+        local ok, err = pcall(NP.SettingsMenuGenerator, nil, desc)
+        if not ok then
+            Problem("SET", "menu", Short(err))
+        elseif n.radio ~= (NP.FONT_MAX - NP.FONT_MIN + 1) + 6 or n.check ~= 2 then
+            Problem("SET", "menu", ("%d radios, %d tick boxes"):format(n.radio, n.check))
+        end
+    end
+
+    Info(("settings size %d opacity %d lock %s remember %s"):format(size, math.floor(alpha * 100 + 0.5),
+        s.locked and "on" or "off", s.rememberOpen and "on" or "off"))
+    Info("corner " .. tostring(ww.corner or "-") .. ", cog " .. tostring(type(ww.settings) == "table" and ww.settings.NPLook or "none"))
+end
+
 -- The checklist view. required = it must be shown (full mode, or a checklist is open).
 function ST.ChecklistParts(required)
     local c = NP.ChecklistWidgets and NP.ChecklistWidgets() or {}
     local so = not required
+    -- a text note is open: the view is hidden, so its parts are too (they keep their own "shown" flag)
+    if so and select(2, Read(c.view, "IsVisible")) ~= true then
+        return { { name = "checklist", obj = c.view, shownOnly = true } }
+    end
     local r1 = c.rows and c.rows[1]
     local check = r1 and r1.NPCheck
     local checkArt = check and select(2, Read(check, "GetNormalTexture"))
@@ -437,6 +546,17 @@ local function CheckSaved()
     elseif junk.window.point ~= "CENTER" or junk.window.x ~= 0 or #(junk.deleted or {}) ~= 1
         or junk.deleted[1].note.text ~= "5" then
         Problem("DB", "window", "bad place or deleted list not repaired")
+    end
+
+    -- settings out of range or of the wrong type are put back in range
+    Count()
+    local sj = { settings = { fontSize = 99.4, alpha = 0 / 0, locked = "yes" } }
+    ok, err = pcall(prep, sj)
+    if not ok then
+        Problem("DB", "settings", Short(err))
+    elseif sj.settings.fontSize ~= NP.FONT_MAX or sj.settings.alpha ~= 1 or sj.settings.locked ~= false
+        or sj.settings.rememberOpen ~= false then
+        Problem("DB", "settings", "not repaired")
     end
 
     -- broken checklists: every line that holds text survives
@@ -557,6 +677,14 @@ local function StepChecklist()
     elseif st == "ok" then
         CheckGroup({ { name = "row1Icon", obj = icon, artSelf = true } }, Win())
     end
+    -- the row is as tall as the text size asks
+    if r1 and NP.ChecklistRowHeight then
+        Count()
+        local s2, h = Read(r1, "GetHeight")
+        if s2 == "ok" and type(h) == "number" and math.abs(h - NP.ChecklistRowHeight()) > 0.5 then
+            Problem("UI", "row1", ("height %.1f, want %d"):format(h, NP.ChecklistRowHeight()))
+        end
+    end
     AddInfo()
     Finish()
 end
@@ -566,6 +694,7 @@ local function StepMain()
     Guard("fold", CheckFoldLevel)
     Guard("esc", CheckEsc)
     Guard("grip", CheckGrip)
+    Guard("settings", CheckSettings)
     local open = NP.IsChecklist(NP.CurrentNote())
     if Folded() then
         Skip("checklist", "(window folded)")

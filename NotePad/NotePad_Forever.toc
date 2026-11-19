@@ -2,7 +2,7 @@
 ## Title: Note Pad
 ## Notes: A simple window to take notes. /np or /notepad
 ## Author: Gettic
-## Version: 1.0.0-beta.1
+## Version: 1.0.0-beta.2
 ## SavedVariables: NotePadDB
 ## IconTexture: Interface\Icons\INV_Misc_Note_01
 ## AddonCompartmentFunc: NotePad_ToggleFromCompartment
@@ -11,5 +11,6 @@ Core.lua
 Window.lua
 Tabs.lua
 Checklist.lua
+Settings.lua
 Minimap.lua
 SelfTest.lua

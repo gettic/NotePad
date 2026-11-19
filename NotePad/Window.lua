@@ -35,6 +35,15 @@ local function TryCreateFrame(frameType, name, parent, template)
 end
 NP.TryCreateFrame = TryCreateFrame
 
+-- Does this client have the atlas? (No C_Texture: assume it does; SetAtlas is pcall'd.)
+function NP.AtlasExists(name)
+    if C_Texture and C_Texture.GetAtlasInfo then
+        local ok, info = pcall(C_Texture.GetAtlasInfo, name)
+        return ok and type(info) == "table"
+    end
+    return true
+end
+
 local function Clamp(v, lo, hi)
     if v < lo then return lo end
     if v > hi then return hi end
@@ -105,7 +114,7 @@ local function SetupEditBoxScripts(eb)
     eb:SetAutoFocus(false)
     eb:SetMaxLetters(0)
     if eb.SetMaxBytes then eb:SetMaxBytes(0) end
-    eb:SetFontObject(ChatFontNormal)
+    eb:SetFontObject(NP.EditFont and NP.EditFont() or ChatFontNormal)
     eb:HookScript("OnTextChanged", function(self, userInput)
         if userInput and editorNote then
             editorNote.text = self:GetText() or ""
@@ -122,13 +131,13 @@ end
 
 -- Preferred: Blizzard's ScrollingEditBoxTemplate + MinimalScrollBar.
 local function CreateModernEditor(parent)
-    local box = TryCreateFrame("Frame", nil, parent, "ScrollingEditBoxTemplate")
+    local box = TryCreateFrame("Frame", nil, parent, NP.Templates.scrollEdit)
     if box then modernParts[#modernParts + 1] = box end
     if not box or not box.GetEditBox then return nil end
     box:SetPoint("TOPLEFT", 6, -6)
     box:SetPoint("BOTTOMRIGHT", -22, 6)
 
-    local bar = TryCreateFrame("EventFrame", nil, parent, "MinimalScrollBar")
+    local bar = TryCreateFrame("EventFrame", nil, parent, NP.Templates.scrollBar)
     if bar then modernParts[#modernParts + 1] = bar end
     if bar and ScrollUtil and ScrollUtil.RegisterScrollBoxWithScrollBar and box.GetScrollBox then
         bar:SetPoint("TOPLEFT", box, "TOPRIGHT", 6, 0)
@@ -139,6 +148,11 @@ local function CreateModernEditor(parent)
 
     local eb = box:GetEditBox()
     SetupEditBoxScripts(eb)
+    -- the template sets its own font (`fontName`) again on every SetText: point it at ours, and
+    -- let the box re-measure its scroll steps for that font
+    local font = NP.EditFont and NP.EditFont() or ChatFontNormal
+    eb.fontName = font
+    if box.SetFontObject then pcall(box.SetFontObject, box, font) end
     editorNote = NP.CurrentNote()
     local text = editorNote.text
     if box.SetText then box:SetText(text) else eb:SetText(text) end
@@ -148,7 +162,7 @@ end
 
 -- Fallback: classic ScrollFrame + EditBox.
 local function CreateClassicEditor(parent)
-    local scroll = TryCreateFrame("ScrollFrame", "NotePadScrollFrame", parent, "UIPanelScrollFrameTemplate")
+    local scroll = TryCreateFrame("ScrollFrame", "NotePadScrollFrame", parent, NP.Templates.scrollFrame)
     if not scroll then
         scroll = CreateFrame("ScrollFrame", "NotePadScrollFrame", parent)
         scroll:EnableMouseWheel(true)
@@ -260,6 +274,25 @@ local function LoadNoteIntoEditor(note)
         editBox:SetText(text)
     end
     RestorePlace(note, text)
+end
+
+-- The text size changed (Settings.lua): the font object already has the new size; the
+-- scrolling box re-measures (which jumps to the top), so put its scroll place back.
+function NP.ReapplyEditorFont()
+    if not editBox then return end
+    local font = NP.EditFont and NP.EditFont() or ChatFontNormal
+    if modernBox and modernBox.SetFontObject then
+        local sb, pct = ModernScrollBox(), nil
+        if sb and sb.GetScrollPercentage then
+            local ok, p = pcall(sb.GetScrollPercentage, sb)
+            if ok and type(p) == "number" then pct = p end
+        end
+        editBox.fontName = font
+        pcall(modernBox.SetFontObject, modernBox, font)
+        if pct and sb.SetScrollPercentage then pcall(sb.SetScrollPercentage, sb, pct) end
+    else
+        editBox:SetFontObject(font)
+    end
 end
 
 -- Notes ----------------------------------------------------------------------
@@ -512,9 +545,14 @@ local function ApplyMinimized(on)
         frame:SetHeight(h)
         inset:Show()
         if NP.tabRow then NP.tabRow:Show() end
-        if grip then grip:Show() end
+        if grip then grip:SetShown(not NP.db.settings.locked) end
     end
     if minButton then minButton:UpdateLook(on) end
+end
+
+-- The resize grip: hidden while folded or locked.
+function NP.UpdateGrip()
+    if grip then grip:SetShown(not NP.db.window.minimized and not NP.db.settings.locked) end
 end
 
 function NP.SetMinimized(on)
@@ -543,7 +581,7 @@ end
 -- Window -----------------------------------------------------------------
 
 local function CreateFallbackFrame()
-    local f = CreateFrame("Frame", "NotePadFrame", UIParent, "BackdropTemplate")
+    local f = CreateFrame("Frame", "NotePadFrame", UIParent, NP.Templates.backdrop)
     f.NPDialogBackdrop = BACKDROP_DIALOG_32_32 or {
         bgFile = NP.Art.dialogBg,
         edgeFile = NP.Art.dialogBorder,
@@ -558,7 +596,7 @@ local function CreateFallbackFrame()
     title:SetWordWrap(false)
     title:SetText("Note Pad")
     f.NPTitle = title
-    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    local close = CreateFrame("Button", nil, f, NP.Templates.close)
     close:SetPoint("TOPRIGHT", -6, -6)
     f.NPClose = close
     local inset = CreateFrame("Frame", nil, f)
@@ -570,10 +608,19 @@ local function CreateFallbackFrame()
 end
 
 local function CreateStyledFrame()
-    local f = TryCreateFrame("Frame", "NotePadFrame", UIParent, "ButtonFrameTemplate")
+    local f = TryCreateFrame("Frame", "NotePadFrame", UIParent, NP.Templates.window)
     if not f or not f.Inset then return nil end
     if ButtonFrameTemplate_HidePortrait then ButtonFrameTemplate_HidePortrait(f) end
     if ButtonFrameTemplate_HideButtonBar then ButtonFrameTemplate_HideButtonBar(f) end
+    -- Blizzard's double metal corner behind the fold and close buttons (as the World Map's
+    -- "Minimizable" layout). Only the top-right piece's art changes, so its place and the other
+    -- pieces stay as they are; no atlas = the single corner stays.
+    local ns = f.NineSlice
+    local tr = type(ns) == "table" and ns.TopRightCorner
+    f.NPCornerStyle = "single"
+    if type(tr) == "table" and tr.SetAtlas and NP.AtlasExists(NP.Art.cornerDouble) then
+        if pcall(tr.SetAtlas, tr, NP.Art.cornerDouble, true) then f.NPCornerStyle = "double" end
+    end
     f.NPInset = f.Inset
     f.NPClose = f.CloseButton
     f.NPTitleH = 24
@@ -611,10 +658,15 @@ local function CreateResizeGrip(f)
     g:SetNormalTexture(NP.Art.gripUp)
     g:SetPushedTexture(NP.Art.gripDown)
     g:SetHighlightTexture(NP.Art.gripHighlight)
-    g:SetScript("OnMouseDown", function(_, button)
-        if button == "LeftButton" then f:StartSizing("BOTTOMRIGHT") end
+    g:SetScript("OnMouseDown", function(self, button)
+        if button == "LeftButton" and not NP.db.settings.locked then
+            self.NPSizing = true
+            f:StartSizing("BOTTOMRIGHT")
+        end
     end)
-    g:SetScript("OnMouseUp", function()
+    g:SetScript("OnMouseUp", function(self)
+        if not self.NPSizing then return end
+        self.NPSizing = false
         f:StopMovingOrSizing()
         SavePosition()
     end)
@@ -649,7 +701,7 @@ end
 
 local function CreateMinimizeButton(f)
     local close = f.NPClose
-    local mm = TryCreateFrame("Frame", nil, f, "MaximizeMinimizeButtonFrameTemplate")
+    local mm = TryCreateFrame("Frame", nil, f, NP.Templates.fold)
     if mm and mm.Minimize and mm.Maximize and mm.SetOnMinimizedCallback and mm.SetOnMaximizedCallback then
         if close then
             mm:SetPoint("RIGHT", close, "LEFT", 2, 0)
@@ -752,9 +804,13 @@ function NP.CreateWindow()
     frame:RegisterForDrag("LeftButton")
     frame:SetScript("OnDragStart", function(self)
         self.NPDragged = true -- this press is a drag, not a click
+        if NP.db.settings.locked then return end -- locked: stays where it is
+        self.NPMoving = true
         self:StartMoving()
     end)
     frame:SetScript("OnDragStop", function(self)
+        if not self.NPMoving then return end
+        self.NPMoving = false
         self:StopMovingOrSizing()
         if self.SetUserPlaced then self:SetUserPlaced(false) end
         SavePosition()
@@ -764,6 +820,11 @@ function NP.CreateWindow()
         if button == "LeftButton" then self.NPDragged = false end
     end)
     frame:HookScript("OnMouseUp", function(self, button)
+        -- right-click on the title bar: the settings menu (same as the cog)
+        if button == "RightButton" and NP.IsCursorOnTitleBar() and NP.OpenSettingsMenu then
+            NP.OpenSettingsMenu(self)
+            return
+        end
         if button ~= "LeftButton" then return end
         if self.NPDragged or not NP.IsCursorOnTitleBar() then
             lastTitleClick = nil
@@ -828,7 +889,10 @@ function NP.CreateWindow()
 
     grip = CreateResizeGrip(frame)
     minButton = CreateMinimizeButton(frame)
-    PlaceTitleLeft(frame, minButton)
+    -- the settings cog left of the fold button (Settings.lua); the title ends before it
+    local cog = NP.CreateSettingsButton and NP.CreateSettingsButton(frame, minButton, frame.NPClose)
+    frame.NPSettingsButton = cog
+    PlaceTitleLeft(frame, cog or minButton)
     ApplyPosition()
     -- Escape closes the window (when the text box doesn't have focus), not the folded bar.
     SetEscCloses(true)
@@ -848,7 +912,8 @@ end
 -- For tests and the self-test: the window's own parts.
 function NP.WindowWidgets()
     return { frame = frame, editBox = editBox, modernBox = modernBox, modernBar = modernBar,
-        classicScroll = classicScroll, grip = grip, fold = minButton, close = frame and frame.NPClose }
+        classicScroll = classicScroll, grip = grip, fold = minButton, close = frame and frame.NPClose,
+        settings = frame and frame.NPSettingsButton, corner = frame and frame.NPCornerStyle }
 end
 
 -- Is the cursor in the top TITLE_BAR_H px of the window?

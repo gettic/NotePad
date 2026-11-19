@@ -8,7 +8,7 @@ local BLIZZ_TAB_H, BOX_TAB_H = 32, 24
 local MAX_TITLE = 24
 local RENAME_H = 18 -- rename box height, centred on the tab label
 local TOOLTIP_CHARS = 40     -- first line of the note shown in the tab tooltip
-local TAB_TEMPLATE = "PanelTopTabButtonTemplate"
+local TAB_TEMPLATE = NP.Templates.tab
 local TAB_PARTS = { "Text", "Left", "Middle", "Right", "LeftActive", "MiddleActive", "RightActive" }
 
 local row, plusBtn, leftBtn, rightBtn, renameBox
@@ -106,7 +106,7 @@ local function SetTabSelected(t, on)
 end
 
 local function MakeButton(parent, label)
-    local b = NP.TryCreateFrame("Button", nil, parent, "BackdropTemplate") or CreateFrame("Button", nil, parent)
+    local b = NP.TryCreateFrame("Button", nil, parent, NP.Templates.backdrop) or CreateFrame("Button", nil, parent)
     if b.SetBackdrop then
         b:SetBackdrop(BACKDROP)
     else
@@ -148,7 +148,7 @@ end
 -- [+]: Blizzard's red panel button (UIPanelButtonTemplate) with a white "+";
 -- else the same art by file; else a plain red button.
 local function MakePlusButton(parent)
-    local b = NP.TryCreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    local b = NP.TryCreateFrame("Button", nil, parent, NP.Templates.button)
     if b then
         b:SetText("+")
         if b.SetNormalFontObject then
@@ -287,7 +287,7 @@ function NP.StartRename(i)
 end
 
 local function CreateRenameBox(parent)
-    local eb = NP.TryCreateFrame("EditBox", nil, parent, "BackdropTemplate") or CreateFrame("EditBox", nil, parent)
+    local eb = NP.TryCreateFrame("EditBox", nil, parent, NP.Templates.backdrop) or CreateFrame("EditBox", nil, parent)
     if eb.SetBackdrop then
         eb:SetBackdrop(BACKDROP)
         eb:SetBackdropColor(unpack(NP.Color.renameBg))

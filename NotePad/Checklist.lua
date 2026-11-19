@@ -3,12 +3,18 @@
 -- by dragging them from the bags (GetCursorInfo + ClearCursor only), or typed.
 local _, NP = ...
 
-local ROW_H = 22
+local ROW_H_MIN = 22    -- row height at the default text size (12 px lines)
+local ROW_PAD = 10      -- row height = text size + this (never under ROW_H_MIN)
+local rowH = ROW_H_MIN  -- follows the text size setting (NP.ChecklistApplyFont)
 local CHECK_SIZE = 24
 local ICON_SIZE = 16
 local TOP_H = 32        -- add box row
 local BOTTOM_H = 32     -- counter + Clear ticked
-local SCROLL_STEP = ROW_H * 2
+
+-- The lines' font (Settings.lua makes NotePadListFont; GameFontHighlight until then).
+local function ListFont()
+    return NP.ListFont and NP.ListFont() or GameFontHighlight
+end
 
 local view, addBox, addBtn, scroll, content, counter, clearBtn, emptyText, lineEdit
 local rows = {}
@@ -255,11 +261,11 @@ end
 
 -- Single-line box: Blizzard's InputBoxTemplate, else a plain box with a thin border.
 local function CreateInput(parent, name)
-    local b = NP.TryCreateFrame("EditBox", nil, parent, "InputBoxTemplate")
+    local b = NP.TryCreateFrame("EditBox", nil, parent, NP.Templates.input)
     if b then
-        used[name] = "InputBoxTemplate"
+        used[name] = NP.Templates.input
     else
-        b = NP.TryCreateFrame("EditBox", nil, parent, "BackdropTemplate") or CreateFrame("EditBox", nil, parent)
+        b = NP.TryCreateFrame("EditBox", nil, parent, NP.Templates.backdrop) or CreateFrame("EditBox", nil, parent)
         if b.SetBackdrop then
             b:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
             b:SetBackdropColor(unpack(NP.Color.inputBg))
@@ -285,10 +291,10 @@ end
 
 -- Blizzard's red panel button, else the same art by file.
 local function CreateButton(parent, label, width, name)
-    local b = NP.TryCreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    local b = NP.TryCreateFrame("Button", nil, parent, NP.Templates.button)
     if b then
         b:SetText(label)
-        used[name] = "UIPanelButtonTemplate"
+        used[name] = NP.Templates.button
     else
         b = CreateFrame("Button", nil, parent)
         local coords = { 0, 0.625, 0, 0.6875 }
@@ -314,9 +320,9 @@ end
 
 -- Tick box: UICheckButtonTemplate, else the same check-box art by file.
 local function CreateCheck(parent)
-    local c = NP.TryCreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+    local c = NP.TryCreateFrame("CheckButton", nil, parent, NP.Templates.check)
     if c then
-        used.check = "UICheckButtonTemplate"
+        used.check = NP.Templates.check
     else
         c = CreateFrame("CheckButton", nil, parent)
         c:SetNormalTexture(NP.Art.checkUp)
@@ -355,7 +361,7 @@ function NP.ChecklistEdit(i)
     lineEdit:ClearAllPoints()
     lineEdit:SetPoint("LEFT", row, "LEFT", CHECK_SIZE + 4, 0)
     lineEdit:SetPoint("RIGHT", row, "RIGHT", -4, 0)
-    lineEdit:SetHeight(ROW_H)
+    lineEdit:SetHeight(rowH)
     lineEdit:SetText(it.text)
     -- the box has no byte limit; if it still didn't take the whole line, don't edit it
     -- (saving the cut copy would lose the rest of the line)
@@ -426,14 +432,14 @@ local function UpdateVisibleRows()
     for i = 1, #shownNote.items do
         local r = rows[i]
         if r then
-            r:SetShown(viewH <= 1 or (i * ROW_H > top and (i - 1) * ROW_H < top + viewH))
+            r:SetShown(viewH <= 1 or (i * rowH > top and (i - 1) * rowH < top + viewH))
         end
     end
 end
 
 local function ScrollBy(delta)
     local range = math.max(0, content:GetHeight() - scroll:GetHeight())
-    scroll:SetVerticalScroll(Clamp(scroll:GetVerticalScroll() - delta * SCROLL_STEP, 0, range))
+    scroll:SetVerticalScroll(Clamp(scroll:GetVerticalScroll() - delta * rowH * 2, 0, range))
     UpdateVisibleRows()
 end
 
@@ -453,7 +459,7 @@ end
 
 local function CreateRow(i)
     local r = CreateFrame("Button", nil, content)
-    r:SetHeight(ROW_H)
+    r:SetHeight(rowH)
     r:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
     local hl = r:CreateTexture(nil, "HIGHLIGHT")
@@ -482,6 +488,7 @@ local function CreateRow(i)
     r.NPIcon = icon
 
     local fs = r:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    fs:SetFontObject(ListFont()) -- the text size setting
     fs:SetJustifyH("LEFT")
     fs:SetWordWrap(false)
     fs:SetPoint("RIGHT", r, "RIGHT", -4, 0)
@@ -505,7 +512,9 @@ local function CreateRow(i)
     r:SetScript("OnReceiveDrag", DropOnList)
     r:EnableMouseWheel(true)
     r:SetScript("OnMouseWheel", function(self, delta)
-        if IsAltKeyDown() then
+        if IsControlKeyDown() and NP.StepFontSize then
+            NP.StepFontSize(delta) -- Ctrl + wheel: text size
+        elseif IsAltKeyDown() then
             local j = IndexOfItem(self.NPItem)
             if j then NP.ChecklistMove(shownNote, j, delta > 0 and -1 or 1) end
         else
@@ -518,9 +527,10 @@ end
 
 local function LayoutRow(r, i, it)
     r.NPItem = it
+    r:SetHeight(rowH) -- the text size may have changed since the row was made
     r:ClearAllPoints()
-    r:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -(i - 1) * ROW_H)
-    r:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, -(i - 1) * ROW_H)
+    r:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -(i - 1) * rowH)
+    r:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, -(i - 1) * rowH)
     r.NPCheck:SetChecked(it.done)
     local tex = ItemIcon(it.text)
     r.NPText:ClearAllPoints()
@@ -555,7 +565,7 @@ Refresh = function(scrollToEnd)
     local viewH = scroll:GetHeight() or 0
     local viewW = scroll:GetWidth() or 0
     if viewW > 1 then content:SetWidth(viewW) end -- in case OnSizeChanged came before the first layout
-    content:SetHeight(math.max(n * ROW_H, viewH, 1))
+    content:SetHeight(math.max(n * rowH, viewH, 1))
     emptyText:SetShown(n == 0)
 
     local done = NP.ChecklistCounts(shownNote)
@@ -564,7 +574,7 @@ Refresh = function(scrollToEnd)
     counter:SetTextColor(cc[1], cc[2], cc[3])
     clearBtn:SetEnabled(done > 0)
 
-    local range = math.max(0, n * ROW_H - viewH)
+    local range = math.max(0, n * rowH - viewH)
     if scrollToEnd then
         scroll:SetVerticalScroll(range)
     elseif scroll:GetVerticalScroll() > range then
@@ -580,6 +590,7 @@ Refresh = function(scrollToEnd)
             lineEdit:ClearAllPoints()
             lineEdit:SetPoint("LEFT", rows[j], "LEFT", CHECK_SIZE + 4, 0)
             lineEdit:SetPoint("RIGHT", rows[j], "RIGHT", -4, 0)
+            lineEdit:SetHeight(rowH)
         else
             NP.FinishLineEdit(true)
         end
@@ -627,6 +638,20 @@ function NP.ClearChecklistFocus()
 end
 
 function NP.ChecklistShownNote() return shownNote end
+
+-- The text size changed (Settings.lua): the font object already has the new size; rows get
+-- taller or shorter with it (never under ROW_H_MIN), then the list is laid out again.
+function NP.ChecklistApplyFont(size)
+    size = tonumber(size) or 12
+    rowH = math.max(ROW_H_MIN, math.floor(size + ROW_PAD + 0.5))
+    if not view then return end
+    local font = ListFont()
+    for _, r in ipairs(rows) do r.NPText:SetFontObject(font) end
+    lineEdit:SetFontObject(font)
+    if shownNote then Refresh() end
+end
+
+function NP.ChecklistRowHeight() return rowH end
 
 -- For the self-test: which Blizzard function is hooked, how many secret links were skipped,
 -- and which template each part uses.
@@ -679,13 +704,15 @@ function NP.CreateChecklist(inset)
     counter:SetPoint("LEFT", view, "BOTTOMLEFT", 12, BOTTOM_H / 2 + 1)
     counter:SetJustifyH("LEFT")
 
-    scroll = NP.TryCreateFrame("ScrollFrame", "NotePadChecklistScroll", view, "UIPanelScrollFrameTemplate")
-    used.scroll = scroll and "UIPanelScrollFrameTemplate" or "own"
+    scroll = NP.TryCreateFrame("ScrollFrame", "NotePadChecklistScroll", view, NP.Templates.scrollFrame)
+    used.scroll = scroll and NP.Templates.scrollFrame or "own"
     if not scroll then scroll = CreateFrame("ScrollFrame", "NotePadChecklistScroll", view) end
     scroll:SetPoint("TOPLEFT", view, "TOPLEFT", 8, -TOP_H - 2)
     scroll:SetPoint("BOTTOMRIGHT", view, "BOTTOMRIGHT", -28, BOTTOM_H + 2)
     scroll:EnableMouseWheel(true)
-    scroll:SetScript("OnMouseWheel", function(_, delta) ScrollBy(delta) end)
+    scroll:SetScript("OnMouseWheel", function(_, delta)
+        if IsControlKeyDown() and NP.StepFontSize then NP.StepFontSize(delta) else ScrollBy(delta) end
+    end)
     scroll:EnableMouse(true)
     scroll:SetScript("OnReceiveDrag", DropOnList)
     scroll:SetScript("OnMouseUp", DropOnList)
@@ -710,6 +737,7 @@ function NP.CreateChecklist(inset)
     emptyText:SetText("Nothing here yet.\nType a line above, Shift-click an item, or drag one here from your bags.")
 
     lineEdit = CreateInput(content, "lineEdit")
+    lineEdit:SetFontObject(ListFont()) -- same size as the line it edits
     lineEdit:SetFrameLevel(content:GetFrameLevel() + 10)
     lineEdit:Hide()
     lineEdit:SetScript("OnEnterPressed", function() NP.FinishLineEdit(true) end)

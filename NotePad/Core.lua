@@ -6,10 +6,31 @@ NP.MAX_NOTES = 20
 
 -- `notes` is not in here: it is an array and is checked by NormalizeNotes.
 -- The old v1 key `text` is not in here either: it is kept only as a backup.
+-- `settings` and `window.shown` are new in Beta A; older versions keep (and ignore) them.
 NP.defaults = {
     current = 1,
-    window = { point = "CENTER", relPoint = "CENTER", x = 0, y = 0, w = 420, h = 320, minimized = false },
+    window = { point = "CENTER", relPoint = "CENTER", x = 0, y = 0, w = 420, h = 320, minimized = false, shown = false },
     minimap = { angle = 225, hide = false },
+    settings = { fontSize = 14, alpha = 1, locked = false, rememberOpen = false },
+}
+
+-- Settings limits (Settings.lua uses them; RepairDB keeps saved values inside them).
+NP.FONT_MIN, NP.FONT_MAX = 10, 18
+NP.ALPHA_MIN = 0.3
+
+-- Every Blizzard template the addon uses, in one place (a missing one falls back to own frames).
+NP.Templates = {
+    window      = "ButtonFrameTemplate",
+    backdrop    = "BackdropTemplate",
+    scrollEdit  = "ScrollingEditBoxTemplate",
+    scrollBar   = "MinimalScrollBar",
+    scrollFrame = "UIPanelScrollFrameTemplate",
+    close       = "UIPanelCloseButton",
+    fold        = "MaximizeMinimizeButtonFrameTemplate",
+    tab         = "PanelTopTabButtonTemplate",
+    button      = "UIPanelButtonTemplate",
+    input       = "InputBoxTemplate",
+    check       = "UICheckButtonTemplate",
 }
 
 -- All art in one place: paths to Blizzard art that ships with the game (no bundled files).
@@ -46,6 +67,9 @@ NP.Art = {
     checkHighlight   = "Interface\\Buttons\\UI-CheckBox-Highlight",
     checkMark        = "Interface\\Buttons\\UI-CheckBox-Check",
     rowHighlight     = "Interface\\QuestFrame\\UI-QuestTitleHighlight",
+    -- atlases (checked with C_Texture.GetAtlasInfo before use)
+    settingsAtlas    = "questlog-icon-setting",              -- cog in the title bar
+    cornerDouble     = "UI-Frame-Metal-CornerTopRightDouble", -- metal corner behind [v][X]
 }
 
 -- All colours in one place: Blizzard's named colours where they exist, else the same values.
@@ -383,10 +407,26 @@ local function RepairDeleted(db)
     db.deleted = (#list > 0) and list or nil
 end
 
+-- Text size: a whole number in FONT_MIN..FONT_MAX; opacity: ALPHA_MIN..1 (junk -> defaults).
+local function RepairSettings(s)
+    local d = NP.defaults.settings
+    if Finite(s.fontSize) then
+        s.fontSize = math.max(NP.FONT_MIN, math.min(NP.FONT_MAX, math.floor(s.fontSize + 0.5)))
+    else
+        s.fontSize = d.fontSize
+    end
+    if Finite(s.alpha) then
+        s.alpha = math.max(NP.ALPHA_MIN, math.min(1, s.alpha))
+    else
+        s.alpha = d.alpha
+    end
+end
+
 -- Defaults + repair + migration on any table (the self-test runs it on a copy).
 function NP.RepairDB(db)
     ApplyDefaults(db, NP.defaults)
     RepairWindow(db.window)
+    RepairSettings(db.settings)
     NP.MigrateDB(db)
     RepairDeleted(db)
     db.dbVersion = NP.DB_VERSION
@@ -516,8 +556,64 @@ function NotePad_ToggleFromCompartment()
     if NP.ToggleWindow then NP.ToggleWindow() end
 end
 
+-- The first note (tab order) whose name is `text`, else the first whose name starts with it;
+-- case-insensitive (ASCII letters only, like strlower). Returns the index or nil.
+function NP.FindNoteByName(text)
+    local want = strlower(strtrim(tostring(text or "")))
+    if want == "" then return nil end
+    local notes = NP.db.notes
+    for i, n in ipairs(notes) do
+        if strlower(n.title or "") == want then return i end
+    end
+    for i, n in ipairs(notes) do
+        if strlower(n.title or ""):sub(1, #want) == want then return i end
+    end
+    return nil
+end
+
+-- Typed text shown back in chat: no colour or link codes.
+local function Shown(s)
+    s = tostring(s):gsub("|", "||")
+    if #s > 40 then s = s:sub(1, 37) .. "..." end
+    return s
+end
+
+local function OpenByName(name)
+    local i = NP.FindNoteByName(name)
+    if i then
+        NP.ShowNote(i) -- before and after opening, as for /np <number>
+        NP.OpenWindow()
+        NP.ShowNote(i)
+    else
+        NP.Print("No note starting with \"" .. Shown(name) .. "\". Type /np help for the commands.")
+    end
+end
+
+local function OnOff(on) return on and "on" or "off" end
+
+local function PrintHelp()
+    NP.Print("/np - open or close Note Pad")
+    NP.Print("/np new - add a new note")
+    NP.Print("/np list - add a new checklist")
+    NP.Print("/np 2 - open note 2 (any number works)")
+    NP.Print("/np raid - open the note whose name starts with \"raid\" (/np open <name> for any name)")
+    NP.Print("/np undo - bring back the last deleted note or checklist lines")
+    NP.Print("/np size 14 - text size (" .. NP.FONT_MIN .. " to " .. NP.FONT_MAX .. "); Ctrl + mouse wheel over the text works too")
+    NP.Print("/np opacity 80 - see-through window (" .. math.floor(NP.ALPHA_MIN * 100) .. " to 100); full while the mouse is on it")
+    NP.Print("/np lock - lock or unlock the window's place and size")
+    NP.Print("/np remember - open Note Pad after login if it was open")
+    NP.Print("/np reset - put the window back in the middle")
+    NP.Print("/np minimap - show or hide the minimap button")
+    NP.Print("/np selftest - check the addon and show a line to copy")
+    NP.Print("Tabs: [+] adds a note. Double-click a tab to rename it, right-click for more. Ctrl+Tab switches notes.")
+    NP.Print("To fold the window, double-click its title bar or right-click the minimap button. Right-click the title bar (or the cog) for settings.")
+end
+
 local function HandleSlash(msg)
-    local cmd = strtrim(strlower(msg or "")):gsub("%s+", " ") -- "selftest  full" = "selftest full"
+    local raw = strtrim(tostring(msg or "")):gsub("%s+", " ") -- "selftest  full" = "selftest full"
+    local cmd = strlower(raw)
+    local word, rest = cmd:match("^(%S+) ?(.*)$")
+    local rawRest = raw:match("^%S+ (.*)$") or ""
     if cmd == "" then
         NP.ToggleWindow()
     elseif cmd == "new" then
@@ -549,20 +645,53 @@ local function HandleSlash(msg)
         NP.Print("The window is back in the middle of the screen.")
     elseif cmd == "minimap" then
         NP.ToggleMinimapButton()
-    else
-        if cmd ~= "help" then
-            NP.Print("I don't know \"" .. strtrim(msg or "") .. "\". Commands:")
+    elseif cmd == "help" then
+        PrintHelp()
+    elseif word == "open" then
+        if rawRest == "" then
+            NP.Print("Type /np open and the start of a note's name, e.g. /np open raid.")
+        else
+            OpenByName(rawRest)
         end
-        NP.Print("/np - open or close Note Pad")
-        NP.Print("/np new - add a new note")
-        NP.Print("/np list - add a new checklist")
-        NP.Print("/np 2 - open note 2 (any number works)")
-        NP.Print("/np undo - bring back the last deleted note or checklist lines")
-        NP.Print("/np reset - put the window back in the middle")
-        NP.Print("/np minimap - show or hide the minimap button")
-        NP.Print("/np selftest - check the addon and show a line to copy")
-        NP.Print("Tabs: [+] adds a note. Double-click a tab to rename it, right-click for more. Ctrl+Tab switches notes.")
-        NP.Print("To fold the window, double-click its title bar or right-click the minimap button.")
+    elseif word == "size" then
+        local n = tonumber(rest)
+        if rest == "" then
+            NP.Print("Text size is " .. NP.db.settings.fontSize .. ". Type /np size " .. NP.FONT_MIN .. " to /np size " .. NP.FONT_MAX .. ".")
+        elseif not n or n ~= n then
+            NP.Print("Type a number, e.g. /np size 14 (" .. NP.FONT_MIN .. " to " .. NP.FONT_MAX .. ").")
+        else
+            local got = NP.SetFontSize(n)
+            local note = ""
+            if n < NP.FONT_MIN or n > NP.FONT_MAX then
+                note = " (sizes go from " .. NP.FONT_MIN .. " to " .. NP.FONT_MAX .. ")"
+            elseif n ~= math.floor(n) then
+                note = " (whole sizes only)"
+            end
+            NP.Print("Text size: " .. got .. note .. ".")
+        end
+    elseif word == "opacity" then
+        local n = tonumber((rest:gsub("%%$", "")))
+        local lo = math.floor(NP.ALPHA_MIN * 100)
+        if rest == "" then
+            NP.Print("Opacity is " .. math.floor(NP.db.settings.alpha * 100 + 0.5) .. "%. Type /np opacity " .. lo .. " to /np opacity 100.")
+        elseif not n or n ~= n then
+            NP.Print("Type a number, e.g. /np opacity 80 (" .. lo .. " to 100).")
+        else
+            if n > 0 and n <= 1 then n = n * 100 end -- 0.5 means 50 %
+            local got = math.floor(NP.SetOpacity(n / 100) * 100 + 0.5)
+            local note = (n < lo or n > 100) and (" (opacity goes from " .. lo .. " to 100%)") or ""
+            NP.Print("Opacity: " .. got .. "%" .. note .. ".")
+        end
+    elseif cmd == "lock" then
+        local on = NP.SetLocked(not NP.db.settings.locked)
+        NP.Print(on and "The window is locked: it can't be moved or resized. /np lock unlocks it."
+            or "The window is unlocked.")
+    elseif cmd == "remember" then
+        local on = NP.SetRememberOpen(not NP.db.settings.rememberOpen)
+        NP.Print("Open after login if it was open: " .. OnOff(on) .. ".")
+    else
+        -- not a command: the start of a note's name
+        OpenByName(raw)
     end
 end
 
@@ -584,9 +713,12 @@ events:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == addonName then
         self:UnregisterEvent("ADDON_LOADED")
         NP.InitDB()
+        if NP.ApplyFonts then NP.ApplyFonts() end -- before the window: its boxes use the fonts
         NP.CreateWindow()
         NP.CreateMinimapButton()
+        if NP.SetupSettings then NP.SetupSettings() end -- opacity, lock, Ctrl+wheel, reopen
     elseif event == "PLAYER_LOGOUT" then
+        NP.loggingOut = true -- the UI closing frames now must not count as "the user closed it"
         if NP.SaveText then NP.SaveText() end
         if NP.FinishLineEdit then NP.FinishLineEdit(true) end
     end
