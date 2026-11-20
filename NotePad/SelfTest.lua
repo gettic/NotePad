@@ -523,7 +523,8 @@ local function CheckBooks()
     end
     local n = 0
     for _ in pairs(type(NP.db.chars) == "table" and NP.db.chars or {}) do n = n + 1 end
-    Info(("book %s, %d notes, character books %d"):format(NP.UsingCharBook() and "character" or "account", #b.notes, n))
+    Info(("book %s, %d notes, character books %d, move/copy %s"):format(NP.UsingCharBook() and "character" or "account",
+        #b.notes, n, (NP.OtherBookLabel and NP.OtherBookLabel()) and "yes" or "no"))
 end
 
 -- Search (on fixed text, never the player's notes) and the tab drag parts.
@@ -716,6 +717,26 @@ local function CheckSaved()
     elseif #db.notes ~= 2 or not tostring(db.notes[2].text):find("typed later", 1, true) or Lines(db.notes[1]) ~= 1 then
         Problem("DB", "recover", "old-version text not kept once")
     end
+
+    -- move / copy to the other notebook (on throwaway books)
+    if NP.TransferNote then
+        Count()
+        local list = { title = "L", kind = "checklist", items = { { text = "x", done = true } } }
+        NP.UpdateChecklistMirror(list)
+        local acc = { notes = { { title = "A", text = "a" }, list }, current = 2 }
+        local fresh = { notes = { { title = "Note 1", text = "" } }, current = 1, use = false }
+        local okMove = NP.TransferNote(acc, 2, fresh, false, true)       -- move into a new book
+        local okLast = NP.TransferNote(acc, 1, fresh, false) == false    -- not the last note
+        local okCopy = NP.TransferNote(fresh, 1, acc, true)              -- copy back
+        local full = { notes = {}, current = 1 }
+        for k = 1, NP.MAX_NOTES do full.notes[k] = { title = "N" .. k, text = "" } end
+        local okFull = NP.TransferNote(fresh, 1, full, true) == false and #full.notes == NP.MAX_NOTES
+        local good = okMove and okCopy and okLast and okFull
+            and #fresh.notes == 1 and fresh.notes[1] == list and fresh.current == 1  -- no stray "Note 1"
+            and #acc.notes == 2 and acc.current == 1 and acc.notes[2] ~= list
+            and acc.notes[2].items[1] ~= list.items[1] and acc.notes[2].items[1].text == "x"
+        if not good then Problem("DB", "moveCopy", "move/copy between notebooks wrong") end
+    end
 end
 
 -- The Shift-click hook and the APIs the checklist uses.
@@ -723,12 +744,46 @@ local function CheckHooks()
     Count()
     local info = NP.ChecklistInfo and NP.ChecklistInfo()
     if not (info and info.hook) then Problem("HOOK", "link", "not installed") end
+    -- Shift-click on a bag stack: the split window cancels the queued line
+    Count()
+    local sf = rawget(_G, "StackSplitFrame")
+    local canSplit = type(sf) == "table" and type(sf.OpenStackSplitFrame) == "function"
+    if canSplit and not (info and info.splitHook) then Problem("HOOK", "split", "not installed") end
+    -- "20 [item]" / "[item] x20": the wanted number of an item line
+    if NP.ChecklistWantedCount then
+        Count()
+        local W = NP.ChecklistWantedCount
+        if W("20 " .. TEST_LINK) ~= 20 or W(TEST_LINK .. " x5") ~= 5 or W(TEST_LINK) ~= nil then
+            Problem("COUNT", "wanted", "number next to the link not read")
+        end
+        -- named link colours (|cnIQ1:), odd numbers, a quest link before the item
+        Count()
+        local named = "|cnIQ1:|Hitem:6948::::::::::::::|h[Hearthstone]|h|r"
+        local quest = "|cffffff00|Hquest:1:1|h[Q]|h|r"
+        if W("20 " .. named) ~= 20 or W("20x " .. named) ~= 20 or W("-5 " .. TEST_LINK) ~= nil
+            or W(TEST_LINK .. " 12/20") ~= nil or W(TEST_LINK .. " 1.5") ~= nil or W(TEST_LINK .. " 20k") ~= nil
+            or W(quest .. " x3 for " .. TEST_LINK) ~= nil or W(quest .. " 3 then " .. TEST_LINK .. " x7") ~= 7 then
+            Problem("COUNT", "wantedOdd", "odd numbers or link colours read wrong")
+        end
+        if NP.PlainText and NP.PlainText(named) ~= "[Hearthstone]" then
+            Problem("COUNT", "plainText", "named link colour left in the text")
+        end
+    end
+    -- the count parts add up (bags + bank + warband bank)
+    if NP.ChecklistItemCounts then
+        Count()
+        local all, bags, bank, warband = NP.ChecklistItemCounts(TEST_LINK)
+        if all and (bags + bank + warband ~= all or bags < 0 or bank < 0 or warband < 0) then
+            Problem("COUNT", "parts", ("%s = %s + %s + %s"):format(tostring(all), tostring(bags), tostring(bank), tostring(warband)))
+        end
+    end
     local apis = {
         { "GetCursorInfo", GetCursorInfo },
         { "ClearCursor", ClearCursor },
         { "GetCurrentKeyBoardFocus", GetCurrentKeyBoardFocus },
         { "GetItemInfoInstant", (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant },
         { "GameTooltip.SetHyperlink", GameTooltip and GameTooltip.SetHyperlink },
+        { "GetItemCount", (C_Item and C_Item.GetItemCount) or GetItemCount },
     }
     for _, a in ipairs(apis) do
         Count()
@@ -738,7 +793,7 @@ end
 
 local function AddInfo()
     local info = NP.ChecklistInfo and NP.ChecklistInfo() or { used = {} }
-    Info("hook " .. tostring(info.hook or "none"))
+    Info("hook " .. tostring(info.hook or "none") .. ", split hook " .. (info.splitHook and "yes" or "no"))
     Info(("issecretvalue %s, secret skips %d"):format(type(issecretvalue) == "function" and "yes" or "no",
         tonumber(info.secretSkips) or 0))
     local t = {}
@@ -792,6 +847,31 @@ local function StepChecklist()
         local s2, h = Read(r1, "GetHeight")
         if s2 == "ok" and type(h) == "number" and math.abs(h - NP.ChecklistRowHeight()) > 0.5 then
             Problem("UI", "row1", ("height %.1f, want %d"):format(h, NP.ChecklistRowHeight()))
+        end
+    end
+    -- the item line's count ("N"): shown, inside the row, right of the text
+    Count()
+    local cnt = r1 and r1.NPCount
+    local cs, cshown = Read(cnt, "IsShown")
+    local bags, all
+    if NP.ChecklistItemCounts then all, bags = NP.ChecklistItemCounts(TEST_LINK) end
+    if cs == "ok" and not cshown then
+        Problem("COUNT", "row1Count", all and "not shown" or "no count from the game")
+    elseif cs == "ok" then
+        CheckGroup({ { name = "row1Count", obj = cnt } }, Win())
+        local tr, cr = ScreenRect(r1.NPText), ScreenRect(cnt)
+        if type(tr) == "table" and type(cr) == "table" and tr.r > cr.l + 1 then Problem("COUNT", "row1Count", "text runs under the count") end
+        Info(("count %s (bags %s)"):format(tostring(select(2, Read(cnt, "GetText"))), tostring(bags)))
+    end
+    -- Untick all on the throwaway list (quiet: no undo entry, no chat)
+    if NP.ChecklistUntickAll and run.state.testNote then
+        Count()
+        local note = run.state.testNote
+        local n = NP.ChecklistUntickAll(note, true)
+        local r2 = c.rows[2]
+        local _, checked = Read(r2 and r2.NPCheck, "GetChecked")
+        if n ~= 1 or note.items[2].done or checked or note.text:find("[x]", 1, true) then
+            Problem("LIST", "untick", "Untick all didn't untick")
         end
     end
     -- full mode: the search panel too (shown over the text for a moment, closed again by Restore)

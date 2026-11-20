@@ -61,7 +61,7 @@ Each note has its own tab.
 | Shift-click `[+]` | Adds a new checklist |
 | Right-click `[+]` | Menu: New note, New checklist, and Bring back (when there is something to bring back) |
 | Double-click a tab | Renames the note |
-| Right-click a tab | Menu: Rename, Move left, Move right, Turn into checklist (or note), Delete |
+| Right-click a tab | Menu: Rename, Move left, Move right, Turn into checklist (or note), Untick all (checklists), Move to ..., Copy to ..., Delete |
 | Shift+right-click a tab | Deletes the note (asks first) |
 | Hover over a tab | Shows the first line of the note |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous note (works while typing) |
@@ -73,6 +73,7 @@ Each note has its own tab.
 - At 20 notes the `[+]` button is greyed out. Delete a note to add another.
 - Deleting a note always asks "Delete the note ...?" first, also when the note is empty.
 - The last note can't be deleted.
+- "Move to ..." and "Copy to ..." send the note to the other notebook: from the account notes to this character's notes, or the other way (see [Notebook for each character](#notebook-for-each-character)). They don't send to other characters. The notebook you have open stays open. The last note in a notebook can only be copied, not moved.
 - Notes from version 0.0.1 are kept as the first tab.
 
 ## Checklists
@@ -82,16 +83,19 @@ A checklist is a tab with lines you can tick off. Make one with Shift-click on `
 | Action | What it does |
 |---|---|
 | Type in the box at the top, press Enter | Adds a line |
-| Shift-click an item (bags, loot, chat links) | Adds the item as a line |
+| Shift-click an item (bags, loot, chat links) | Adds the item as a line (see the note below for bag stacks) |
 | Drag an item from your bags onto the list | Adds the item as a line |
 | Click the box in front of a line | Ticks it off, or back on |
 | Double-click a line | Edits it (Enter saves, Esc cancels) |
-| Right-click a line | Menu: Edit, Move up, Move down, Delete |
+| Right-click a line | Menu: Edit, Move up, Move down, Untick all, Delete |
 | Alt + mouse wheel on a line | Moves the line up or down |
 | Shift-click an item line | Puts the item's link into chat |
 | "Clear ticked" button | Removes all ticked lines (asks first) |
 
 - Item lines show the item's icon, and hovering shows the item's real tooltip.
+- Shift-clicking a bag stack to split it adds no line. When no text box is in use, only item links are added (not spells or other links). To add a stack, click the add box first, or drag the item onto the list.
+- "Untick all" (in the tab's and the line's right-click menu) unticks every line without deleting any. It suits daily or weekly lists. `/np undo` ticks them again.
+- Item lines show how many you have: bags, bank and warband bank (the banks as of your last visit). Write a whole number next to the item to set a target, for example `20 [Linen Cloth]`, `20x [Linen Cloth]`, `x20 [Linen Cloth]`, `[Linen Cloth] x20`, `[Linen Cloth] 20x` or `[Linen Cloth] 20`. The line then shows "12 / 20", and turns green when you have enough. Numbers like "-5", "1.5", "12/20" or "20k" are not read as a target. The line's tooltip lists bags, bank and warband bank (the last only when you have some there).
 - A list can have up to 200 lines.
 - A tab's right-click menu turns a note into a checklist and back. If you don't change the list in between, the note comes back with its exact text (blank lines, spacing). If the note has formatting a list can't show, a chat line tells you. Once the list is changed, it comes back as one "[x] " or "[ ] " line per list line.
 - Lines can be any length, and long ones can be edited without being cut.
@@ -102,7 +106,8 @@ A checklist is a tab with lines you can tick off. Make one with Shift-click on `
 `/np undo` brings back the last thing you deleted:
 
 - A deleted note goes back to its old place. The last 3 deleted notes are kept, also after `/reload` or logging out.
-- Checklist lines removed with Delete or "Clear ticked" come back too, until you log out.
+- Checklist lines removed with Delete or "Clear ticked" come back too, until you log out. So do lines unticked with "Untick all": they are ticked again.
+- The chat hint about `/np undo` after deleting checklist lines shows only the first time in a session.
 
 The same is in the `[+]` right-click menu as "Bring back ...".
 

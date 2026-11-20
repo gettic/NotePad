@@ -427,6 +427,99 @@ local function DeleteNoteTable(note)
     NP.Print("Deleted \"" .. NP.GoldText(note.title) .. "\". Type /np undo to bring it back.")
 end
 
+-- Move or copy a note to the other notebook -------------------------------------------
+
+-- Deep copy of a note (title, text, checklist items ...): the copy shares no tables.
+local function CopyNote(v)
+    if type(v) ~= "table" then return v end
+    local t = {}
+    for k, x in pairs(v) do t[k] = CopyNote(x) end
+    return t
+end
+
+-- Plain data step (the self-test runs it on copies): note i of fromBook goes to the end of
+-- toBook (copy = a deep copy, else moved). fresh = toBook was just made: its starting empty
+-- "Note 1" is replaced. Returns true, or false + "missing" | "full" | "last".
+function NP.TransferNote(fromBook, i, toBook, copy, fresh)
+    local note = fromBook and fromBook.notes and fromBook.notes[i]
+    if not note or type(toBook) ~= "table" or type(toBook.notes) ~= "table" then return false, "missing" end
+    if not copy and #fromBook.notes <= 1 then return false, "last" end
+    local only = toBook.notes[1]
+    local replace = fresh and #toBook.notes == 1 and not NP.IsChecklist(only)
+        and (only.text == nil or only.text == "")
+    if not replace and #toBook.notes >= NP.MAX_NOTES then return false, "full" end
+    local sent = copy and CopyNote(note) or note
+    -- add first, remove after: an error half-way can't lose the note
+    if replace then
+        toBook.notes[1] = sent
+        toBook.current = 1
+    else
+        toBook.notes[#toBook.notes + 1] = sent
+    end
+    if not copy then
+        table.remove(fromBook.notes, i)
+        local cur = tonumber(fromBook.current) or 1
+        if cur > i then cur = cur - 1 end
+        fromBook.current = Clamp(cur, 1, #fromBook.notes)
+    end
+    return true
+end
+
+-- "Account notes" / "<Name>'s notes" (chat and menus).
+local function BookLabel(book)
+    if book == NP.db then return "account notes" end
+    return (NP.charName or "Character") .. "'s notes"
+end
+
+-- The notebook a tab's note would go to, its label; nil while the character isn't known.
+function NP.OtherBookLabel()
+    if not NP.charKey then NP.UpdateCharKey() end
+    if not NP.charKey then return nil end
+    return BookLabel(NP.UsingCharBook() and NP.db or "char")
+end
+
+-- Tab menu: move (copy = false) or copy note i of the open notebook to the other one.
+function NP.SendNoteToOtherBook(i, copy)
+    local from = NP.Book()
+    local note = from.notes[i]
+    if not note then return false end
+    if not NP.charKey then NP.UpdateCharKey() end
+    if not NP.charKey then
+        NP.Print("The character's name isn't known yet. Try again in a moment.")
+        return false
+    end
+    if not copy and #from.notes <= 1 then
+        NP.Print("The last note can't be moved. Copy it instead.")
+        return false
+    end
+    if renaming then FinishRename(true) end
+    NP.SaveText() -- the open note's text goes with it
+    if NP.FinishLineEdit then NP.FinishLineEdit(true) end
+    local to, fresh = NP.OtherBook(), false
+    if not to then
+        to = NP.CharBook(true) -- made now (not opened: `use` stays false)
+        fresh = true
+    end
+    local wasCurrent = (i == from.current)
+    local ok, why = NP.TransferNote(from, i, to, copy, fresh)
+    local where = BookLabel(to)
+    if not ok then
+        if why == "full" then
+            NP.Print("The " .. where .. " already have " .. NP.MAX_NOTES .. " notes. Delete one there first.")
+        end
+        return false
+    end
+    if not copy and wasCurrent then
+        NP.ShowNote(from.current, true) -- saved above; the text box held the moved note
+    else
+        NP.RefreshTabs(true)
+    end
+    if NP.RefreshSearch then NP.RefreshSearch() end
+    NP.Print((copy and "Copied \"" or "Moved \"") .. NP.GoldText(note.title) .. "\" to " .. where
+        .. ". Switch notebooks in the cog menu.")
+    return true
+end
+
 -- Always ask before deleting (empty notes too). The last note can't be deleted.
 function NP.RequestDelete(i)
     local db = NP.Book()
@@ -504,6 +597,22 @@ local function OpenMenu(owner, i)
                 local j = IndexOf(note)
                 if j then NP.ConvertNote(j) end
             end)
+            if NP.IsChecklist(note) and NP.ChecklistUntickAll then
+                local untick = root:CreateButton("Untick all", function() NP.ChecklistUntickAll(note) end)
+                if NP.ChecklistCounts(note) == 0 and untick and untick.SetEnabled then untick:SetEnabled(false) end
+            end
+            local other = NP.OtherBookLabel()
+            if other then -- hidden while the character's name isn't known
+                local move = root:CreateButton("Move to " .. other, function()
+                    local j = IndexOf(note)
+                    if j then NP.SendNoteToOtherBook(j, false) end
+                end)
+                if #notes <= 1 and move and move.SetEnabled then move:SetEnabled(false) end
+                root:CreateButton("Copy to " .. other, function()
+                    local j = IndexOf(note)
+                    if j then NP.SendNoteToOtherBook(j, true) end
+                end)
+            end
             local del = root:CreateButton("Delete", function()
                 local j = IndexOf(note)
                 if j then NP.RequestDelete(j) end

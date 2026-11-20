@@ -65,6 +65,67 @@ local function FirstLink(text)
     return text:match("|H(%a+:[^|]*)|h")
 end
 
+-- How many of the line's first item you have. Returns all, bags, bank, warband bank (banks as of
+-- the last visit), or nil when the line has no item link, the API is missing or an answer is secret.
+-- C_Item.GetItemCount(id, includeBank, includeUses, includeReagentBank, includeAccountBank)
+-- (Forever: ItemDocumentation.lua, used so by ItemUtil.GetCraftingReagentCount). This client has
+-- no separate reagent bank (Enum.BagIndex has no Reagentbank), so that flag adds nothing; it is
+-- passed in case a later client has one (it then counts as "bank"). The old global
+-- GetItemCount(id, includeBank) ignores the extra flags (no warband bank there).
+local function ItemCounts(text)
+    local id = tonumber(text:match("|Hitem:(%d+)"))
+    if not id then return nil end
+    local get = (C_Item and C_Item.GetItemCount) or GetItemCount
+    if type(get) ~= "function" then return nil end
+    local ok1, bags = pcall(get, id, false)
+    local ok2, bank = pcall(get, id, true, false, true, false)
+    local ok3, all = pcall(get, id, true, false, true, true)
+    if IsSecret(bags) or IsSecret(bank) or IsSecret(all) then
+        secretSkips = secretSkips + 1
+        return nil
+    end
+    if not ok1 or type(bags) ~= "number" then return nil end
+    if not ok2 or type(bank) ~= "number" or bank < bags then bank = bags end
+    if not ok3 or type(all) ~= "number" or all < bank then all = bank end
+    return all, bags, bank - bags, all - bank
+end
+NP.ChecklistItemCounts = ItemCounts -- tests / self-test
+
+-- Tooltip line: "You have 15: bags 8, bank 4, warband bank 3" (warband bank only when > 0), or nil.
+function NP.ChecklistCountText(text)
+    local all, bags, bank, warband = ItemCounts(text)
+    if not all then return nil end
+    local s = ("You have %d: bags %d, bank %d"):format(all, bags, bank)
+    if warband > 0 then s = s .. (", warband bank %d"):format(warband) end
+    return s
+end
+
+-- How many the line asks for: a whole number written next to the first ITEM link
+-- ("20 [Linen Cloth]", "20x [..]", "x20 [..]", "[..] x20", "[..] 20x", "[..] 20"), 1..9999, else nil. Odd numbers
+-- ("-5", "1.5", "12/20", "20k") give nil. Other links (quests, spells) are never "next to".
+local function WantedCount(text)
+    local plain = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|cn[^:|]*:", ""):gsub("|r", "")
+    local seen = false
+    plain = plain:gsub("|H(.-)|h.-|h", function(link)
+        if not seen and link:sub(1, 5) == "item:" then
+            seen = true
+            return "\1"
+        end
+        return "\2"
+    end)
+    if not seen then return nil end
+    -- before: at the start or after a space; after: followed by the end, a space or , ; )
+    local n = plain:match("^%s*[xX]?(%d+)%s*[xX]?%s*\1") or plain:match("%s[xX]?(%d+)%s*[xX]?%s*\1")
+    if not n then
+        local m, nextChar = plain:match("\1%s*[xX]?%s*(%d+)[xX]?(.?)")
+        if m and (nextChar == "" or nextChar:find("^[%s,;%)]")) then n = m end
+    end
+    n = tonumber(n)
+    if n and n >= 1 and n <= 9999 then return n end
+    return nil
+end
+NP.ChecklistWantedCount = WantedCount -- tests
+
 -- Data changes -------------------------------------------------------------------
 
 local Refresh
@@ -111,7 +172,28 @@ function NP.ChecklistDelete(note, i)
     local item = table.remove(items, i)
     NP.PushRemovedLines(note, { { i = i, item = item } })
     Changed(note)
-    NP.Print("Line deleted. Type /np undo to bring it back.")
+    NP.UndoHint("lineDelete", "Line deleted. Type /np undo to bring it back.") -- first time per session only
+end
+
+-- "Untick all": every ticked line unticked (nothing deleted); /np undo ticks them again.
+-- Returns the number of lines unticked. quiet = no undo entry, no chat (the self-test's throwaway list).
+function NP.ChecklistUntickAll(note, quiet)
+    if not NP.IsChecklist(note) then return 0 end
+    if editing and editing.note == note then NP.FinishLineEdit(true) end
+    local unticked = {}
+    for _, it in ipairs(note.items) do
+        if it.done then
+            it.done = false
+            unticked[#unticked + 1] = it
+        end
+    end
+    if #unticked == 0 then return 0 end
+    Changed(note)
+    if quiet then return #unticked end
+    NP.PushUntick(note, unticked)
+    NP.UndoHint("untick", (#unticked == 1 and "Unticked 1 line." or ("Unticked " .. #unticked .. " lines."))
+        .. " Type /np undo to tick them again.")
+    return #unticked
 end
 
 local function RemoveTicked(note)
@@ -204,8 +286,20 @@ end
 
 -- Shift-click link hook ------------------------------------------------------------
 
+local pendingLinks = {}   -- { text, note } item links waiting one frame (see OnInsertLink)
+local splitHooked = false
+
+-- Adds the links that waited a frame (a split window opening in the same click emptied the list).
+local function FlushPendingLinks()
+    local list = pendingLinks
+    pendingLinks = {}
+    for _, p in ipairs(list) do
+        if NP.IsChecklist(p.note) and NP.BookOf(p.note) then NP.ChecklistAddLine(p.note, p.text) end
+    end
+end
+
 -- Runs after Blizzard's link insert (post-hook only). Puts the link into our focused box,
--- or adds it as a line when nothing has the keyboard and a checklist is showing.
+-- or adds an item link as a line (a frame later) when nothing has the keyboard and a checklist is showing.
 local function OnInsertLink(text)
     if ownInsert then return end
     if IsSecret(text) then
@@ -223,11 +317,22 @@ local function OnInsertLink(text)
         end
         return -- another box (chat, macro, other addons) has it
     end
-    if shownNote and view and view:IsVisible() then
-        NP.ChecklistAddLine(shownNote, text)
+    -- nothing has the keyboard: only item links, and only if this click didn't open the
+    -- split-stack window (Shift is both "link" and "split"; Blizzard opens the split window in the
+    -- same click, right after the link insert, so the add waits one frame)
+    if shownNote and view and view:IsVisible() and text:find("|Hitem:", 1, true) then
+        pendingLinks[#pendingLinks + 1] = { text = text, note = shownNote }
+        if #pendingLinks == 1 then
+            if C_Timer and C_Timer.After then C_Timer.After(0, FlushPendingLinks) else FlushPendingLinks() end
+        end
     end
 end
 NP.OnInsertLink = OnInsertLink -- tests
+
+-- The split-stack window opened in this click: the queued link was a split, not an add.
+local function OnSplitOpened()
+    for k = #pendingLinks, 1, -1 do pendingLinks[k] = nil end
+end
 
 local function InstallLinkHook()
     if hookedName then return end
@@ -238,11 +343,16 @@ local function InstallLinkHook()
         hooksecurefunc("ChatEdit_InsertLink", OnInsertLink)
         hookedName = "ChatEdit_InsertLink"
     end
+    if not splitHooked and type(StackSplitFrame) == "table"
+        and type(StackSplitFrame.OpenStackSplitFrame) == "function" then
+        hooksecurefunc(StackSplitFrame, "OpenStackSplitFrame", OnSplitOpened)
+        splitHooked = true
+    end
 end
 
 -- Send a line's link to an open chat box (Shift-click on a row), like a bag item.
 local function LinkToChat(text)
-    local link = text:match("|c%x+|H.-|h.-|h|r") or text:match("|H.-|h.-|h")
+    local link = text:match("|c%x+|H.-|h.-|h|r") or text:match("|cn[^:|]*:|H.-|h.-|h|r") or text:match("|H.-|h.-|h")
     if not link then return end
     local insert = (type(ChatFrameUtil) == "table" and ChatFrameUtil.InsertLink) or ChatEdit_InsertLink
     if type(insert) ~= "function" then return end
@@ -411,6 +521,8 @@ local function OpenRowMenu(row)
                 if j then NP.ChecklistMove(note, j, 1) end
             end)
             if idx >= #note.items and down and down.SetEnabled then down:SetEnabled(false) end
+            local untick = root:CreateButton("Untick all", function() NP.ChecklistUntickAll(note) end)
+            if NP.ChecklistCounts(note) == 0 and untick and untick.SetEnabled then untick:SetEnabled(false) end
             root:CreateButton("Delete", function()
                 local j = IndexOfItem(item)
                 if j then NP.ChecklistDelete(note, j) end
@@ -452,9 +564,30 @@ local function RowEnter(self)
     if not ok then
         GameTooltip:SetText(NP.PlainText(text), 1, 1, 1, 1, true)
     end
+    local line = NP.ChecklistCountText(text)
+    if line then
+        local w = NP.Color.white
+        GameTooltip:AddLine(line, w[1], w[2], w[3], true)
+    end
     local g = NP.Color.grey
     GameTooltip:AddLine("Double-click: edit. Right-click: more. Alt + mouse wheel: move.", g[1], g[2], g[3], true)
     GameTooltip:Show()
+end
+
+-- Fills a row's count ("12", or "12 / 20" green once reached). Returns true if shown.
+local function SetCount(r, it)
+    local all = ItemCounts(it.text)
+    if not all then
+        r.NPCount:SetText("")
+        r.NPCount:Hide()
+        return false
+    end
+    local want = WantedCount(it.text)
+    r.NPCount:SetText(want and (all .. " / " .. want) or tostring(all))
+    local c = (it.done and NP.Color.grey) or ((want and all >= want) and NP.Color.green) or NP.Color.white
+    r.NPCount:SetTextColor(c[1], c[2], c[3])
+    r.NPCount:Show()
+    return true
 end
 
 local function CreateRow(i)
@@ -493,6 +626,14 @@ local function CreateRow(i)
     fs:SetWordWrap(false)
     fs:SetPoint("RIGHT", r, "RIGHT", -4, 0)
     r.NPText = fs
+
+    local count = r:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    count:SetFontObject(ListFont())
+    count:SetJustifyH("RIGHT")
+    count:SetWordWrap(false)
+    count:SetPoint("RIGHT", r, "RIGHT", -4, 0)
+    count:Hide()
+    r.NPCount = count -- "12" or "12 / 20" on item lines
 
     r:SetScript("OnClick", function(self, button)
         if DropOnList() then return end -- clicked with an item on the cursor
@@ -534,7 +675,11 @@ local function LayoutRow(r, i, it)
     r.NPCheck:SetChecked(it.done)
     local tex = ItemIcon(it.text)
     r.NPText:ClearAllPoints()
-    r.NPText:SetPoint("RIGHT", r, "RIGHT", -4, 0)
+    if SetCount(r, it) then
+        r.NPText:SetPoint("RIGHT", r.NPCount, "LEFT", -6, 0)
+    else
+        r.NPText:SetPoint("RIGHT", r, "RIGHT", -4, 0)
+    end
     if tex then
         r.NPIcon:SetTexture(tex)
         r.NPIcon:Show()
@@ -550,7 +695,24 @@ local function LayoutRow(r, i, it)
     local a = it.done and NP.TICKED_ALPHA or 1
     r.NPText:SetAlpha(a)
     r.NPIcon:SetAlpha(a)
+    r.NPCount:SetAlpha(a)
     r:Show()
+end
+
+-- Bags or bank changed: only the counts (the text's anchor follows the count's width).
+local function RefreshCounts()
+    if not shownNote then return end
+    for i, it in ipairs(shownNote.items) do
+        local r = rows[i]
+        -- every item line, also one whose count was hidden at the last redraw (no answer then)
+        if r and r.NPItem == it and it.text:find("|Hitem:", 1, true) then
+            if SetCount(r, it) then
+                r.NPText:SetPoint("RIGHT", r.NPCount, "LEFT", -6, 0)
+            else
+                r.NPText:SetPoint("RIGHT", r, "RIGHT", -4, 0)
+            end
+        end
+    end
 end
 
 Refresh = function(scrollToEnd)
@@ -675,7 +837,10 @@ function NP.ChecklistApplyFont(size)
     rowH = math.max(ROW_H_MIN, math.floor(size + ROW_PAD + 0.5))
     if not view then return end
     local font = ListFont()
-    for _, r in ipairs(rows) do r.NPText:SetFontObject(font) end
+    for _, r in ipairs(rows) do
+        r.NPText:SetFontObject(font)
+        r.NPCount:SetFontObject(font)
+    end
     lineEdit:SetFontObject(font)
     if shownNote then Refresh() end
 end
@@ -685,7 +850,8 @@ function NP.ChecklistRowHeight() return rowH end
 -- For the self-test: which Blizzard function is hooked, how many secret links were skipped,
 -- and which template each part uses.
 function NP.ChecklistInfo()
-    return { hook = hookedName, secretSkips = secretSkips, used = used }
+    return { hook = hookedName, splitHook = splitHooked, secretSkips = secretSkips, used = used,
+        pendingLinks = #pendingLinks }
 end
 
 -- For tests and the self-test: the view's widgets.
@@ -700,7 +866,17 @@ function NP.CreateChecklist(inset)
     view:SetAllPoints(inset)
     view:SetFrameLevel(inset:GetFrameLevel() + 2) -- above the text box's click catcher
     view:Hide()
-    view:SetScript("OnShow", function() Refresh() end) -- sizes are known now (window opened)
+    view:SetScript("OnShow", function(self)
+        -- item counts follow the bags and bank only while a checklist is showing
+        self:RegisterEvent("BAG_UPDATE_DELAYED")
+        self:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
+        Refresh() -- sizes are known now (window opened)
+    end)
+    view:SetScript("OnHide", function(self)
+        self:UnregisterEvent("BAG_UPDATE_DELAYED")
+        self:UnregisterEvent("PLAYERBANKSLOTS_CHANGED")
+    end)
+    view:SetScript("OnEvent", RefreshCounts)
 
     addBtn = CreateButton(view, "Add", 64, "addButton")
     addBtn:SetPoint("TOPRIGHT", view, "TOPRIGHT", -8, -6)

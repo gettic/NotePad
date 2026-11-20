@@ -88,6 +88,7 @@ NP.Color = {
     gold        = NamedColor("NORMAL_FONT_COLOR", 1, 0.82, 0),
     white       = NamedColor("HIGHLIGHT_FONT_COLOR", 1, 1, 1),
     grey        = NamedColor("GRAY_FONT_COLOR", 0.5, 0.5, 0.5),
+    green       = NamedColor("GREEN_FONT_COLOR", 0.1, 1, 0.1), -- item count reached
     tabText     = { 0.85, 0.85, 0.85, 1 },
     tabBg       = { 0.06, 0.06, 0.06, 0.9 },
     tabBorder   = { 0.45, 0.45, 0.45, 1 },
@@ -222,7 +223,7 @@ end
 -- "|cff..|Hitem:..|h[Name]|h|r" -> "[Name]" (for tooltips and previews).
 function NP.PlainText(s)
     s = tostring(s or "")
-    s = s:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|H.-|h(.-)|h", "%1")
+    s = s:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|cn[^:|]*:", ""):gsub("|r", ""):gsub("|H.-|h(.-)|h", "%1") -- |cnIQ4: = named colour
     return s
 end
 
@@ -583,6 +584,22 @@ function NP.PushRemovedLines(note, lines)
     while #lineUndo > LINE_UNDO_MAX do table.remove(lineUndo, 1) end
 end
 
+-- lines unticked by "Untick all": /np undo ticks them again (this session)
+function NP.PushUntick(note, items)
+    if #items == 0 then return end
+    lineUndo[#lineUndo + 1] = { seq = NextSeq(), note = note, ticks = items }
+    while #lineUndo > LINE_UNDO_MAX do table.remove(lineUndo, 1) end
+end
+
+-- Chat hints that would repeat on every action: only the first time per session (per kind).
+local hinted = {}
+function NP.UndoHint(kind, text)
+    if hinted[kind] then return false end
+    hinted[kind] = true
+    NP.Print(text)
+    return true
+end
+
 local function IndexOfNote(note)
     for i, n in ipairs(NP.Book().notes) do
         if n == note then return i end
@@ -596,7 +613,23 @@ local function UndoTop()
     local l
     for k = #lineUndo, 1, -1 do
         local e = lineUndo[k]
-        if not NP.IsChecklist(e.note) or not NP.BookOf(e.note) then
+        local empty = false
+        if e.ticks and NP.IsChecklist(e.note) then
+            -- Untick all: lines still in the list and unticked can be ticked again; lines that a
+            -- line undo can still bring back count too. None left: nothing to offer.
+            local still, waiting = {}, {}
+            for _, it in ipairs(e.note.items) do still[it] = true end
+            for _, o in ipairs(lineUndo) do
+                for _, line in ipairs(o.lines or {}) do waiting[line.item] = true end
+            end
+            local left = 0
+            for _, it in ipairs(e.ticks) do
+                if (still[it] and not it.done) or waiting[it] then left = left + 1 end
+            end
+            e.left = left
+            empty = left == 0
+        end
+        if not NP.IsChecklist(e.note) or not NP.BookOf(e.note) or empty then
             table.remove(lineUndo, k)
         elseif not l and IndexOfNote(e.note) then
             l = e
@@ -605,7 +638,7 @@ local function UndoTop()
     local deleted = NP.Book().deleted
     local d = deleted and deleted[#deleted]
     if d and (not l or d.seq >= l.seq) then return "note", d end
-    if l then return "lines", l end
+    if l then return l.ticks and "ticks" or "lines", l end
     return nil
 end
 
@@ -617,6 +650,10 @@ function NP.UndoLabel()
     if kind == "note" then return "Bring back \"" .. e.note.title .. "\"" end
     if kind == "lines" then
         return #e.lines == 1 and "Bring back 1 line" or ("Bring back " .. #e.lines .. " lines")
+    end
+    if kind == "ticks" then
+        local n = e.left or #e.ticks
+        return n == 1 and "Tick 1 line again" or ("Tick " .. n .. " lines again")
     end
     return nil
 end
@@ -644,8 +681,30 @@ function NP.Undo()
         NP.Print("Brought back \"" .. NP.GoldText(e.note.title) .. "\".")
         return true
     end
-    -- lines
     local note = e.note
+    if kind == "ticks" then
+        for k = #lineUndo, 1, -1 do
+            if lineUndo[k] == e then table.remove(lineUndo, k) break end
+        end
+        local still = {}
+        for _, it in ipairs(note.items) do still[it] = true end
+        local n = 0
+        for _, it in ipairs(e.ticks) do -- lines deleted since then stay gone
+            if still[it] then it.done = true; n = n + 1 end
+        end
+        if n == 0 then
+            NP.Print("The unticked lines of \"" .. NP.GoldText(note.title) .. "\" are gone; nothing to tick again.")
+            return false
+        end
+        NP.UpdateChecklistMirror(note)
+        local idx = IndexOfNote(note)
+        if NP.OpenWindow then NP.OpenWindow() end
+        if idx and NP.ShowNote then NP.ShowNote(idx) end
+        if NP.ChecklistRefresh then NP.ChecklistRefresh(note) end
+        NP.Print((n == 1 and "Ticked 1 line" or ("Ticked " .. n .. " lines")) .. " again in \"" .. NP.GoldText(note.title) .. "\".")
+        return true
+    end
+    -- lines
     local room = NP.CHECKLIST_MAX_LINES - #note.items
     if room < #e.lines then
         NP.Print("A checklist can have up to " .. NP.CHECKLIST_MAX_LINES .. " lines; \"" .. NP.GoldText(note.title) .. "\" is too full.")
