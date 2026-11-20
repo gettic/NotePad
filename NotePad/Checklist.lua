@@ -639,6 +639,35 @@ end
 
 function NP.ChecklistShownNote() return shownNote end
 
+-- Search hit (Search.lua): scroll line i of the shown checklist into view and light it up
+-- for a moment (the row's own hover highlight, locked).
+local flashed
+function NP.ShowChecklistRow(note, i)
+    if not view or note ~= shownNote or not note.items[i] then return false end
+    local viewH = scroll:GetHeight() or 0
+    local top, cur = (i - 1) * rowH, scroll:GetVerticalScroll() or 0
+    local range = math.max(0, #note.items * rowH - viewH)
+    if top < cur then
+        cur = top
+    elseif top + rowH > cur + viewH then
+        cur = top + rowH - viewH
+    end
+    scroll:SetVerticalScroll(Clamp(cur, 0, range))
+    UpdateVisibleRows()
+    local r = rows[i]
+    if not r then return false end
+    if flashed and flashed ~= r then flashed:UnlockHighlight() end
+    flashed = r
+    r:LockHighlight()
+    C_Timer.After(1.5, function()
+        if flashed == r then
+            r:UnlockHighlight()
+            flashed = nil
+        end
+    end)
+    return true
+end
+
 -- The text size changed (Settings.lua): the font object already has the new size; rows get
 -- taller or shorter with it (never under ROW_H_MIN), then the list is laid out again.
 function NP.ChecklistApplyFont(size)

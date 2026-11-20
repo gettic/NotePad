@@ -74,8 +74,11 @@ function NP.CreateMinimapButton()
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Note Pad")
         local w, h = NP.Color.white, NP.Color.hint
-        local note, count = NP.CurrentNote(), #NP.db.notes
+        local note, count = NP.CurrentNote(), #NP.Book().notes
         GameTooltip:AddLine(("%s (%d %s)"):format(note.title, count, count == 1 and "note" or "notes"), w[1], w[2], w[3])
+        if NP.UsingCharBook() then
+            GameTooltip:AddLine("Notebook: " .. NP.BookName(NP.Book()), w[1], w[2], w[3])
+        end
         GameTooltip:AddLine("Left-click: open / close", h[1], h[2], h[3])
         GameTooltip:AddLine("Right-click: fold / unfold", h[1], h[2], h[3])
         GameTooltip:AddLine("Drag: move this button", h[1], h[2], h[3])

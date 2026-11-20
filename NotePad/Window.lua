@@ -164,6 +164,10 @@ local function SetupEditBoxScripts(eb)
             NP.CycleNote(IsShiftKeyDown() and -1 or 1)
         end
     end)
+    -- Ctrl+F: search all notes (Search.lua)
+    eb:HookScript("OnKeyDown", function(_, key)
+        if key == "F" and IsControlKeyDown() and NP.OpenSearch then NP.OpenSearch() end
+    end)
 end
 
 -- Preferred: Blizzard's ScrollingEditBoxTemplate + MinimalScrollBar.
@@ -341,7 +345,11 @@ function NP.UpdateTitle()
     if not frame then return end
     local note = NP.CurrentNote()
     local text = "Note Pad"
-    if note and note.title ~= "" then text = "Note Pad - " .. note.title end
+    if note and note.title ~= "" then
+        -- a character's own notebook: "Note Pad - Name: tab"
+        local book = NP.UsingCharBook and NP.UsingCharBook() and (NP.BookName(NP.Book()) .. ": ") or ""
+        text = "Note Pad - " .. book .. note.title
+    end
     if frame.NPTitle then
         frame.NPTitle:SetText(text)
     elseif frame.SetTitle then
@@ -354,13 +362,20 @@ end
 -- Open note `index`: the box, the title and the tabs always end up showing the same note.
 -- skipSave: the text box holds a note that no longer exists (deleted).
 function NP.ShowNote(index, skipSave)
-    local db = NP.db
+    local db = NP.Book()
     if not db.notes[index] then index = 1 end
     if not skipSave then NP.SaveText() end -- into the note the box was loaded from
     db.current = index
     if editBox then LoadNoteIntoEditor(db.notes[index]) end
     NP.UpdateTitle()
     if NP.RefreshTabs then NP.RefreshTabs(true) end
+end
+
+-- The notebook changed (NP.SetCharBook already saved the old one): show its open note.
+function NP.OnBookChanged()
+    local b = NP.Book()
+    NP.ShowNote(b.current, true)
+    if NP.RefreshSearch then NP.RefreshSearch() end
 end
 
 function NP.FocusText()
@@ -371,6 +386,29 @@ function NP.FocusText()
             editBox:SetFocus()
         end
     end
+end
+
+-- Search hit (Search.lua): select bytes s+1 .. e of the open text note and scroll to them.
+-- Edit box positions are byte offsets in the raw text (0 = before the first byte).
+function NP.SelectEditorText(s, e)
+    local note = editorNote
+    if not editBox or not note then return false end
+    local len = #(editBox:GetText() or "")
+    s = math.max(0, math.min(s, len))
+    e = math.max(s, math.min(e, len))
+    editBox:SetFocus()
+    editBox:SetCursorPosition(e)
+    editBox:HighlightText(s, e)
+    local function Into()
+        if editorNote ~= note then return end
+        if modernBox and modernBox.ScrollCursorIntoView then
+            pcall(modernBox.ScrollCursorIntoView, modernBox, false)
+        end
+    end
+    Into()
+    -- after ShowNote's own "back to where it was left" (a frame later)
+    C_Timer.After(0, Into)
+    return true
 end
 
 -- Minimize -----------------------------------------------------------------
@@ -932,7 +970,10 @@ function NP.CreateWindow()
     -- the settings cog left of the fold button (Settings.lua); the title ends before it
     local cog = NP.CreateSettingsButton and NP.CreateSettingsButton(frame, minButton, frame.NPClose)
     frame.NPSettingsButton = cog
-    PlaceTitleLeft(frame, cog or minButton)
+    -- the search button left of the cog, and the search panel over the inset (Search.lua)
+    local search = NP.CreateSearch and NP.CreateSearch(frame, inset, cog or minButton)
+    frame.NPSearchButton = search
+    PlaceTitleLeft(frame, search or cog or minButton)
     ApplyPosition()
     -- Escape closes the window (when the text box doesn't have focus), not the folded bar.
     SetEscCloses(true)
@@ -953,7 +994,8 @@ end
 function NP.WindowWidgets()
     return { frame = frame, editBox = editBox, modernBox = modernBox, modernBar = modernBar,
         classicScroll = classicScroll, grip = grip, fold = minButton, close = frame and frame.NPClose,
-        settings = frame and frame.NPSettingsButton, corner = frame and frame.NPCornerStyle }
+        settings = frame and frame.NPSettingsButton, search = frame and frame.NPSearchButton,
+        corner = frame and frame.NPCornerStyle }
 end
 
 -- Is the cursor in the top TITLE_BAR_H px of the window?

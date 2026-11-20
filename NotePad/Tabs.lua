@@ -31,7 +31,7 @@ local function Clamp(v, lo, hi)
 end
 
 local function IndexOf(note)
-    for i, n in ipairs(NP.db.notes) do
+    for i, n in ipairs(NP.Book().notes) do
         if n == note then return i end
     end
 end
@@ -267,13 +267,13 @@ end
 NP.FinishRename = FinishRename
 
 function NP.StartRename(i)
-    local note = NP.db.notes[i]
+    local note = NP.Book().notes[i]
     local tab = tabs[i]
     if not note or not tab or not tab:IsShown() then return end
     if renaming then FinishRename(true) end
     renaming = note
     -- exactly over the label: same height, same font, centred, so the name doesn't jump
-    local selected = (i == NP.db.current)
+    local selected = (i == NP.Book().current)
     local _, y = LabelOffset(tab, selected)
     renameBox:ClearAllPoints()
     renameBox:SetPoint("LEFT", tab, "LEFT", 3, y)
@@ -320,7 +320,7 @@ end
 
 -- kind: nil = text note, "checklist" = checklist.
 function NP.AddNote(kind)
-    local notes = NP.db.notes
+    local notes = NP.Book().notes
     if #notes >= NP.MAX_NOTES then
         NP.Print(NP.LimitText())
         return
@@ -341,7 +341,7 @@ end
 -- Turn note i into a checklist (one line per text line) or back into a text note
 -- ("[x] " / "[ ] " in front of each line). Blank lines are left out.
 function NP.ConvertNote(i)
-    local note = NP.db.notes[i]
+    local note = NP.Book().notes[i]
     if not note then return end
     NP.SaveText()
     if NP.FinishLineEdit then NP.FinishLineEdit(true) end
@@ -369,7 +369,7 @@ function NP.ConvertNote(i)
             NP.Print("Turn it back into a note before changing the list to get the exact text back (blank lines, spacing).")
         end
     end
-    if i == NP.db.current then
+    if i == NP.Book().current then
         NP.ShowNote(i, true) -- saved above
     else
         NP.RefreshTabs()
@@ -378,29 +378,38 @@ end
 
 -- Ctrl+Tab / Ctrl+Shift+Tab: next / previous note, wrapping round.
 function NP.CycleNote(dir)
-    local db = NP.db
+    local db = NP.Book()
     local n = #db.notes
     if n < 2 then return end
     NP.ShowNote((db.current - 1 + dir) % n + 1)
     NP.FocusText()
 end
 
-function NP.MoveNote(i, dir)
-    local db = NP.db
-    local j = i + dir
-    if not db.notes[i] or not db.notes[j] then return end
+-- Move note `from` to place `to` (1 .. #notes); the open note stays open. Returns true if moved.
+function NP.MoveNoteTo(from, to)
+    local db = NP.Book()
+    local notes = db.notes
+    if not notes[from] or type(to) ~= "number" or to ~= to then return false end
+    to = Clamp(math.floor(to), 1, #notes)
+    if to == from then return false end
+    if renaming then FinishRename(true) end
     NP.SaveText()
-    db.notes[i], db.notes[j] = db.notes[j], db.notes[i]
-    if db.current == i then
-        db.current = j
-    elseif db.current == j then
-        db.current = i
+    if NP.FinishLineEdit then NP.FinishLineEdit(true) end
+    local open = notes[db.current]
+    table.insert(notes, to, table.remove(notes, from))
+    for i, n in ipairs(notes) do
+        if n == open then db.current = i break end
     end
     NP.RefreshTabs(true)
+    return true
+end
+
+function NP.MoveNote(i, dir)
+    return NP.MoveNoteTo(i, i + dir)
 end
 
 local function DeleteNoteTable(note)
-    local db = NP.db
+    local db = NP.Book()
     local i = IndexOf(note)
     if not i or #db.notes <= 1 then return end
     if renaming == note then FinishRename(false) end
@@ -420,7 +429,7 @@ end
 
 -- Always ask before deleting (empty notes too). The last note can't be deleted.
 function NP.RequestDelete(i)
-    local db = NP.db
+    local db = NP.Book()
     local note = db.notes[i]
     if not note then return end
     if #db.notes <= 1 then
@@ -468,12 +477,12 @@ end
 
 -- Right-click menu (MenuUtil; only calls our own functions, nothing protected).
 local function OpenMenu(owner, i)
-    local note = NP.db.notes[i]
+    local note = NP.Book().notes[i]
     if not note then return end
     local ok = false
     if MenuUtil and MenuUtil.CreateContextMenu then
         ok = pcall(MenuUtil.CreateContextMenu, owner, function(_, root)
-            local notes = NP.db.notes
+            local notes = NP.Book().notes
             local idx = IndexOf(note)
             if not idx then return end
             root:CreateTitle(note.title)
@@ -522,6 +531,142 @@ local function OpenNewMenu(owner)
     if not ok then NP.AddNote("checklist") end
 end
 
+-- Drag a tab to move it ------------------------------------------------------------
+-- The tab follows the cursor along the row (a bit see-through), a gold line shows where it
+-- will go, and letting go moves the note there (NP.MoveNoteTo). Holding it over a page arrow
+-- turns the page every PAGE_WAIT s. Clicks still work: WoW starts a drag only after the mouse
+-- has moved a few pixels with the button held.
+local PAGE_WAIT = 0.4
+local DRAG_ALPHA = 0.7
+local drag          -- { note, tab, offset, wait, slot } while a tab is dragged
+local dragFrame     -- over the row, shown (and updating) only while dragging; holds dragLine
+local dragLine
+local justDragged = false -- the OnClick that comes with the drag's mouse-up is not a click
+local Scroll        -- page the row (below)
+
+local function CursorX()
+    local x = GetCursorPosition()
+    local s = row:GetEffectiveScale()
+    return (type(x) == "number" and s and s > 0) and x / s or 0
+end
+
+-- Where the dragged tab would go: the slot before tab k (k = n + 1: after the last).
+local function DropSlot(x)
+    local n = #NP.Book().notes
+    local lastShown
+    for i = 1, n do
+        local t = tabs[i]
+        if t and t ~= drag.tab and t:IsShown() then
+            local l, w = t:GetLeft(), t:GetWidth()
+            if l and w and x < l + w / 2 then return i end
+            lastShown = i
+        end
+    end
+    return lastShown and (lastShown + 1) or (IndexOf(drag.note) or 1)
+end
+
+local function SlotToIndex(slot, from)
+    return (slot > from) and (slot - 1) or slot
+end
+
+local function PlaceDragLine(slot)
+    local rowL = row:GetLeft()
+    local t = tabs[slot]
+    local x
+    if t and t ~= drag.tab and t:IsShown() and t:GetLeft() then
+        x = t:GetLeft() - GAP / 2
+    else
+        for i = slot - 1, 1, -1 do
+            local p = tabs[i]
+            if p and p ~= drag.tab and p:IsShown() and p:GetRight() then x = p:GetRight() + GAP / 2 break end
+        end
+    end
+    if not x or not rowL then dragLine:Hide() return end
+    dragLine:ClearAllPoints()
+    dragLine:SetPoint("TOP", row, "TOPLEFT", x - rowL, 0)
+    dragLine:SetPoint("BOTTOM", row, "BOTTOMLEFT", x - rowL, 0)
+    dragLine:Show()
+end
+
+local function EndDrag(drop)
+    if not drag then return end
+    local d = drag
+    drag = nil
+    dragFrame:Hide()
+    d.tab:SetAlpha(1)
+    d.tab:SetFrameLevel(d.level)
+    justDragged = true
+    C_Timer.After(0, function() justDragged = false end)
+    local from = IndexOf(d.note)
+    if drop and from and d.slot and NP.MoveNoteTo(from, SlotToIndex(d.slot, from)) then return end
+    NP.RefreshTabs(false) -- not moved: the tab goes back to its place
+end
+
+local function DragUpdate(_, elapsed)
+    if not drag then return end
+    if not row:IsVisible() then return EndDrag(false) end
+    -- the button was let go somewhere OnDragStop doesn't see (e.g. the tab was paged away)
+    if type(IsMouseButtonDown) == "function" and not IsMouseButtonDown("LeftButton") then return EndDrag(true) end
+    local x = CursorX()
+    local rowL, rowW, w = row:GetLeft(), row:GetWidth(), drag.tab:GetWidth()
+    if rowL and rowW and w then
+        local left = Clamp(x - drag.offset - rowL, 0, math.max(0, rowW - PLUS_W - GAP - w))
+        drag.tab:ClearAllPoints()
+        drag.tab:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", left, 0)
+    end
+    -- over a page arrow: turn the page after a short wait
+    local arrow
+    for _, b in ipairs({ leftBtn, rightBtn }) do
+        if b:IsShown() and b:IsEnabled() and b:IsMouseOver() then arrow = b end
+    end
+    if arrow then
+        drag.wait = drag.wait + (elapsed or 0)
+        if drag.wait >= PAGE_WAIT then
+            drag.wait = 0
+            Scroll(arrow == leftBtn and -1 or 1)
+        end
+    else
+        drag.wait = 0
+    end
+    drag.slot = DropSlot(x)
+    PlaceDragLine(drag.slot)
+end
+
+local function TabDragStart(self)
+    local note = NP.Book().notes[self.NPIndex]
+    if not note or #NP.Book().notes < 2 then return end
+    if renaming then FinishRename(true) end
+    if GameTooltip then GameTooltip:Hide() end
+    local l = self:GetLeft()
+    drag = { note = note, tab = self, offset = l and (CursorX() - l) or 0, wait = 0, level = self:GetFrameLevel() }
+    self:SetAlpha(DRAG_ALPHA)
+    self:SetFrameLevel(dragFrame:GetFrameLevel() - 1) -- over the other tabs, under the line
+    dragFrame:Show()
+    DragUpdate(dragFrame, 0)
+end
+
+local function TabDragStop()
+    if drag then
+        DragUpdate(dragFrame, 0) -- the slot where the mouse is now
+        EndDrag(true)
+    end
+end
+
+function NP.IsDraggingTab() return drag ~= nil end
+
+local function CreateDragFrame()
+    dragFrame = CreateFrame("Frame", nil, row)
+    dragFrame:SetAllPoints(row)
+    dragFrame:SetFrameLevel(row:GetFrameLevel() + 15)
+    dragFrame:Hide()
+    dragFrame:SetScript("OnUpdate", DragUpdate)
+    dragFrame:SetScript("OnHide", function() if drag then EndDrag(false) end end)
+    dragLine = dragFrame:CreateTexture(nil, "OVERLAY")
+    dragLine:SetWidth(2)
+    dragLine:SetColorTexture(unpack(NP.Color.gold))
+    dragLine:Hide()
+end
+
 -- Tab row ------------------------------------------------------------------------
 
 -- Blizzard's top tab (only if it has all the parts we use), else our own box.
@@ -547,11 +692,16 @@ end
 local function CreateTab(i)
     local t = NewTabButton()
     t:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    t:RegisterForDrag("LeftButton")
+    t:SetScript("OnDragStart", TabDragStart)
+    t:SetScript("OnDragStop", TabDragStop)
+    t:HookScript("OnMouseDown", function() justDragged = false end)
     t:SetScript("OnClick", function(self, button)
         local idx = self.NPIndex
+        if justDragged and button == "LeftButton" then return end -- the end of a drag, not a click
         if button == "RightButton" then
             if IsShiftKeyDown() then NP.RequestDelete(idx) else OpenMenu(self, idx) end
-        elseif idx ~= NP.db.current then
+        elseif idx ~= NP.Book().current then
             NP.ShowNote(idx)
         end
     end)
@@ -559,11 +709,12 @@ local function CreateTab(i)
         if button == "LeftButton" then NP.StartRename(self.NPIndex) end
     end)
     SetTooltip(t, function(self)
-        local note = NP.db.notes[self.NPIndex]
+        local note = NP.Book().notes[self.NPIndex]
         if not note then return "", nil end
         local C = NP.Color
         local hints = {
             { "Double-click: rename", C.hint },
+            { "Drag: move the tab", C.hint },
             { "Right-click: rename, move, delete", C.hint },
             { "Shift + right-click: delete", C.hint },
             { "Ctrl+Tab while typing: next note", C.hint },
@@ -617,7 +768,7 @@ local measured = -1 -- number of notes at the last full pass (names, widths, sel
 -- layoutOnly: only the row's width changed (resizing): reuse the measured widths.
 function NP.RefreshTabs(ensureCurrent, layoutOnly)
     if not row then return end
-    local db = NP.db
+    local db = NP.Book()
     local notes = db.notes
     local n = #notes
 
@@ -676,6 +827,8 @@ function NP.RefreshTabs(ensureCurrent, layoutOnly)
             t:ClearAllPoints()
             t:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", x, 0)
             x = x + w + GAP
+        elseif drag and drag.tab == t then
+            t:Show() -- paged away while dragged: it stays under the cursor (DragUpdate places it)
         else
             t:Hide()
         end
@@ -696,14 +849,15 @@ function NP.RefreshTabs(ensureCurrent, layoutOnly)
     end
 end
 
-local function Scroll(delta)
+Scroll = function(delta)
     first = first + delta
     NP.RefreshTabs(false)
 end
 
 -- For tests and debugging: the row's widgets.
 function NP.TabWidgets()
-    return { row = row, plus = plusBtn, left = leftBtn, right = rightBtn, tabs = tabs, rename = renameBox }
+    return { row = row, plus = plusBtn, left = leftBtn, right = rightBtn, tabs = tabs, rename = renameBox,
+        drag = dragFrame, dragLine = dragLine }
 end
 
 function NP.CreateTabs(f, inset, height)
@@ -736,7 +890,7 @@ function NP.CreateTabs(f, inset, height)
         end
     end)
     SetTooltip(plusBtn, function()
-        if #NP.db.notes >= NP.MAX_NOTES then
+        if #NP.Book().notes >= NP.MAX_NOTES then
             return "New note", { { NP.LimitText() } }
         end
         return "New note", {
@@ -761,5 +915,6 @@ function NP.CreateTabs(f, inset, height)
     SetTooltip(leftBtn, arrowTip)
 
     renameBox = CreateRenameBox(row)
+    CreateDragFrame()
     NP.RefreshTabs(true)
 end

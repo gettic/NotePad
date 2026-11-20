@@ -298,6 +298,11 @@ function ST.MainParts()
         parts[#parts + 1] = { name = "settings", obj = cog, top = true,
             art = (type(cog) == "table" and cog.NPLook == "atlas") and { "Icon" } or nil }
     end
+    local search = ww.search
+    if search then -- the search button (folded too); its atlas must load
+        parts[#parts + 1] = { name = "search", obj = search, top = true,
+            art = (type(search) == "table" and search.NPLook == "atlas") and { "Icon" } or nil }
+    end
     if not Folded() then
         parts[#parts + 1] = { name = "tabRow", obj = w.row }
         parts[#parts + 1] = { name = "plus", obj = w.plus }
@@ -475,7 +480,7 @@ local function CheckSettings()
         end
     end
 
-    -- the menu builds: 9 text sizes, 6 opacities, 2 tick boxes
+    -- the menu builds: 9 text sizes, 6 opacities, 2 notebooks (when the character is known), 2 tick boxes
     if NP.SettingsMenuGenerator then
         Count()
         local n = { radio = 0, check = 0 }
@@ -489,14 +494,65 @@ local function CheckSettings()
         local ok, err = pcall(NP.SettingsMenuGenerator, nil, desc)
         if not ok then
             Problem("SET", "menu", Short(err))
-        elseif n.radio ~= (NP.FONT_MAX - NP.FONT_MIN + 1) + 6 or n.check ~= 2 then
+        elseif n.radio ~= (NP.FONT_MAX - NP.FONT_MIN + 1) + 6 + (NP.charKey and 2 or 0) or n.check ~= 2 then
             Problem("SET", "menu", ("%d radios, %d tick boxes"):format(n.radio, n.check))
         end
     end
 
     Info(("settings size %d opacity %d lock %s remember %s"):format(size, math.floor(alpha * 100 + 0.5),
         s.locked and "on" or "off", s.rememberOpen and "on" or "off"))
-    Info("corner " .. tostring(ww.corner or "-") .. ", cog " .. tostring(type(ww.settings) == "table" and ww.settings.NPLook or "none"))
+    Info("corner " .. tostring(ww.corner or "-") .. ", cog " .. tostring(type(ww.settings) == "table" and ww.settings.NPLook or "none")
+        .. ", search " .. tostring(type(ww.search) == "table" and ww.search.NPLook or "none"))
+end
+
+-- Notebooks: the open one is sound and holds the open note; the character is known.
+-- (Only counts in the line: no character names.)
+local function CheckBooks()
+    if not NP.Book then return Skip("books", "(none)") end
+    Count()
+    local b = NP.Book()
+    if type(b) ~= "table" or type(b.notes) ~= "table" or #b.notes < 1 then return Problem("BOOK", "open", "no notes") end
+    if type(b.current) ~= "number" or not b.notes[b.current] then Problem("BOOK", "open", "open note out of range") end
+    Count()
+    if NP.BookOf(NP.CurrentNote()) ~= b then Problem("BOOK", "open", "open note not in the open notebook") end
+    Count()
+    if not NP.charKey then Problem("BOOK", "character", "name not known (notebook switch off)") end
+    if NP.WindowWidgets and NP.EditorNote and NP.EditorNote() then
+        Count()
+        if NP.BookOf(NP.EditorNote()) ~= b then Problem("BOOK", "textBox", "text box holds a note of the other notebook") end
+    end
+    local n = 0
+    for _ in pairs(type(NP.db.chars) == "table" and NP.db.chars or {}) do n = n + 1 end
+    Info(("book %s, %d notes, character books %d"):format(NP.UsingCharBook() and "character" or "account", #b.notes, n))
+end
+
+-- Search (on fixed text, never the player's notes) and the tab drag parts.
+local function CheckSearchAndDrag()
+    if NP.SearchVisible then
+        Count()
+        local raw = TEST_LINK .. " a||b |TInterface\\Icons\\X:0|t|A:atlas:0:0|a"
+        local vis, map = NP.SearchVisible(raw)
+        local rawPos = NP.SearchRawPos
+        if vis ~= "[Hearthstone] a|b " or type(map) ~= "table" or not rawPos
+            or rawPos(map, 1) ~= TEST_LINK:find("[", 1, true) or rawPos(map, 16, true) ~= #TEST_LINK + 4 then
+            Problem("FIND", "text", "codes not taken out: " .. tostring(vis):gsub("|", "||"):sub(1, 40))
+        end
+    end
+    local sw = NP.SearchWidgets and NP.SearchWidgets()
+    Count()
+    if not (sw and sw.panel and sw.box) then
+        Problem("FIND", "panel", "missing")
+    else
+        Info("search box " .. tostring(sw.used))
+    end
+    local tw = NP.TabWidgets and NP.TabWidgets() or {}
+    Count()
+    local t1 = tw.tabs and tw.tabs[1]
+    if not (tw.drag and tw.dragLine and NP.MoveNoteTo) then
+        Problem("DRAG", "tabs", "drag parts missing")
+    elseif t1 and select(2, Read(t1, "GetScript", "OnDragStart")) == nil then
+        Problem("DRAG", "tab1", "no drag script")
+    end
 end
 
 -- The checklist view. required = it must be shown (full mode, or a checklist is open).
@@ -546,10 +602,17 @@ local function CheckSaved()
     -- the player's own data, on a copy: nothing lost
     Count()
     local copy = DeepCopy(NP.db or {})
-    local before = type(copy.notes) == "table" and #copy.notes or 0
+    local function CountNotes(d)
+        local n = type(d.notes) == "table" and #d.notes or 0
+        for _, b in pairs(type(d.chars) == "table" and d.chars or {}) do
+            n = n + (type(b) == "table" and type(b.notes) == "table" and #b.notes or 0)
+        end
+        return n
+    end
+    local before = CountNotes(copy)
     local ok, err = pcall(prep, copy)
     if not ok then return Problem("DB", "current", Short(err)) end
-    if #copy.notes < before then Problem("DB", "current", "notes lost") end
+    if CountNotes(copy) < before then Problem("DB", "current", "notes lost") end
 
     -- broken data of every kind
     Count()
@@ -597,6 +660,29 @@ local function CheckSaved()
             and Lines(n[2]) == 3 and n[2].items[1].done == true and n[2].items[3].text == "c"
             and n[3].kind == "later" and n[3].text == "k" and bad.current == 1
         if not good then Problem("DB", "checklist", "repair lost or changed lines") end
+    end
+
+    -- character notebooks: broken books repaired, every text kept, the account notes untouched
+    Count()
+    local cb = { notes = { { title = "Acc", text = "acc" } }, current = 1, dbVersion = 2, chars = {
+        ["A-B"] = { notes = { "x", { text = 5 }, { kind = "checklist", items = { "l1" } } }, current = 9, use = "yes" },
+        [3] = "plain", bad = true, ["C-D"] = { notes = {}, current = 0 / 0, use = true } } }
+    ok, err = pcall(prep, cb)
+    if not ok then
+        Problem("DB", "chars", Short(err))
+    else
+        local a, p, c = cb.chars and cb.chars["A-B"], cb.chars and cb.chars["3"], cb.chars and cb.chars["C-D"]
+        local good = a and #a.notes == 3 and a.notes[1].text == "x" and a.notes[2].text == "5" and Lines(a.notes[3]) == 1
+            and a.current == 1 and a.use == false and p and p.notes[1].text == "plain" and cb.chars.bad == nil
+            and c and #c.notes == 1 and c.current == 1 and c.use == true
+            and #cb.notes == 1 and cb.notes[1].text == "acc"
+        if not good then Problem("DB", "chars", "character notebooks not repaired") end
+    end
+    Count()
+    local lost = { notes = { { title = "Acc", text = "acc" } }, current = 1, dbVersion = 2, chars = "typed text" }
+    ok, err = pcall(prep, lost)
+    if not ok or lost.chars ~= nil or #lost.notes ~= 2 or lost.notes[2].text ~= "typed text" then
+        Problem("DB", "chars", ok and "text in a broken notebook list lost" or Short(err))
     end
 
     -- note <-> checklist text round trip
@@ -685,6 +771,8 @@ local function Later(frames, fn)
     C_Timer.After(0, Tick)
 end
 
+local StepSearch
+
 local function StepChecklist()
     CheckGroup(ST.ChecklistParts(true), Win())
     Guard("grip", CheckGrip)
@@ -706,6 +794,24 @@ local function StepChecklist()
             Problem("UI", "row1", ("height %.1f, want %d"):format(h, NP.ChecklistRowHeight()))
         end
     end
+    -- full mode: the search panel too (shown over the text for a moment, closed again by Restore)
+    local sw = NP.SearchWidgets and NP.SearchWidgets()
+    if sw and sw.panel and not sw.panel:IsShown() then
+        run.state.showedSearch = true
+        sw.panel:Show()
+        return Later(2, StepSearch)
+    end
+    AddInfo()
+    Finish()
+end
+
+StepSearch = function()
+    local sw = NP.SearchWidgets()
+    CheckGroup({
+        { name = "searchPanel", obj = sw.panel },
+        { name = "searchBox", obj = sw.box },
+        { name = "searchStatus", obj = sw.status },
+    }, Win())
     AddInfo()
     Finish()
 end
@@ -716,6 +822,8 @@ local function StepMain()
     Guard("esc", CheckEsc)
     Guard("grip", CheckGrip)
     Guard("settings", CheckSettings)
+    Guard("books", CheckBooks)
+    Guard("search", CheckSearchAndDrag)
     local open = NP.IsChecklist(NP.CurrentNote())
     if Folded() then
         Skip("checklist", "(window folded)")
@@ -745,6 +853,7 @@ end
 -- Puts back everything the run opened (only what it opened), whatever happened.
 local function Restore()
     local s = run.state
+    if s.showedSearch and NP.CloseSearch then Try("search", NP.CloseSearch) end
     if s.showedTest then
         local cur = NP.CurrentNote()
         Try("checklist", NP.ShowChecklist, NP.IsChecklist(cur) and cur or nil)

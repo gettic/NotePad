@@ -1,8 +1,8 @@
 # Note Pad
 
-A simple addon for **WoW Forever** to take notes. It opens a window with tabs, one note or checklist per tab. Whatever you type is saved, and all your characters on the account see the same notes.
+A simple addon for **WoW Forever** to take notes. It opens a window with tabs, one note or checklist per tab. Whatever you type is saved. By default all your characters on the account see the same notes. You can also give each character its own notebook (see [Notebook for each character](#notebook-for-each-character)).
 
-Version 1.0.0-beta.3. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
+Version 1.0.0-beta.4. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
 
 - [Install](#install)
 - [Open and close](#open-and-close)
@@ -10,6 +10,8 @@ Version 1.0.0-beta.3. Please report any problems you find in a [GitHub issue](ht
 - [Tabs](#tabs)
 - [Checklists](#checklists)
 - [Bringing back deleted notes](#bringing-back-deleted-notes)
+- [Searching your notes](#searching-your-notes)
+- [Notebook for each character](#notebook-for-each-character)
 - [Moving, resizing and folding](#moving-resizing-and-folding)
 - [Settings](#settings)
 - [Minimap button](#minimap-button)
@@ -54,6 +56,7 @@ Each note has its own tab.
 | Action | What it does |
 |---|---|
 | Click a tab | Shows that note |
+| Drag a tab left or right | Moves the note there. Hold it over a page arrow to reach tabs on the next page. |
 | Red `[+]` button | Adds a new note (up to 20) |
 | Shift-click `[+]` | Adds a new checklist |
 | Right-click `[+]` | Menu: New note, New checklist, and Bring back (when there is something to bring back) |
@@ -103,6 +106,27 @@ A checklist is a tab with lines you can tick off. Make one with Shift-click on `
 
 The same is in the `[+]` right-click menu as "Bring back ...".
 
+## Searching your notes
+
+Search looks through all your notes, in both notebooks (see below). Open it with:
+
+- the magnifier in the title bar (left of the cog),
+- Ctrl+F while typing in a note,
+- `/np find <text>`.
+
+Type in the search box. The matches are listed with a short preview. Click a match, or press Enter for the first one, to open that note with the match selected. For a checklist, the line is lit up. Esc closes the search. With more matches than fit, use the mouse wheel.
+
+Capital letters with accents (like Ä or É) only match themselves, because the game's lower-casing covers A-Z only.
+
+## Notebook for each character
+
+By default there is one set of notes for the whole account. You can switch to a notebook that belongs only to the character you are playing:
+
+- Settings menu > Notebook, or `/np char`, switches between "Account (all characters)" and this character's own notes.
+- Off by default. A character's own notebook is made when you first switch to it.
+- While it is in use, the window title shows the character's name.
+- The notes in the other notebook are kept as they are. Search covers both.
+
 ## Moving, resizing and folding
 
 - Drag the window by its title bar or edge to move it.
@@ -122,6 +146,7 @@ Click the cog in the title bar (left of the fold button), or right-click the tit
 | Opacity | 30% to 100%, menu steps 100 to 50. The window is fully visible while the mouse is on it, while you type in it, or while its menu is open. | `/np opacity 80` (`0.5` also means 50%) |
 | Lock window | The window can't be moved or resized, and the resize grip hides. Folding and closing still work. | `/np lock` |
 | Open after login if it was open | Off by default. If Note Pad was open (or folded) when you logged out, it opens again. Closing it with Esc or X counts as closed. | `/np remember` |
+| Notebook | Account notes (all characters) or this character's own notes. See [Notebook for each character](#notebook-for-each-character). | `/np char` |
 | Reset place and size | Same as `/np reset`. | `/np reset` |
 
 Ctrl + mouse wheel over the text or a checklist also changes the text size. The settings are saved for your whole account.
@@ -151,6 +176,8 @@ Type `/np` or `/notepad`, followed by:
 | `opacity [30-100]` | Sets the opacity |
 | `lock` | Locks or unlocks the window |
 | `remember` | Turns "Open after login" on or off |
+| `char` | Switches between the account notes and this character's own notes |
+| `find <text>` | Opens the window and searches all notes for the text |
 | `reset` | Moves the window back to the middle, to its normal size, and unfolds it |
 | `minimap` | Hides or shows the minimap button |
 | `selftest` | Checks the addon (see [Self-test](#self-test)) |
@@ -173,12 +200,13 @@ The addon lives in `NotePad\`. It uses no libraries and only the game's own pict
 | `Tabs.lua` | The tab row: add, switch, rename, move, convert and delete notes |
 | `Checklist.lua` | The checklist view: lines, ticks, items, drag and drop |
 | `Settings.lua` | Text size and fonts, opacity, lock, open after login, the cog and its menu |
+| `Search.lua` | Searching all notes |
 | `Minimap.lua` | The minimap button |
 | `SelfTest.lua` | `/np selftest` |
 
 `Bindings.xml` (not in the `.toc`, the game loads it by itself) adds the key binding.
 
-Saved data is in `NotePadDB` (one for the whole account): the notes (title and text each; checklists also keep their lines), which one is open, the last 3 deleted notes, the window's place, size and folded state, the settings (text size, opacity, lock, open after login), and the minimap button's place and whether it is hidden.
+Saved data is in `NotePadDB` (one for the whole account): the account notes, and the own notes of each character that uses a notebook of its own (`chars`). For each: the notes (title and text each; checklists also keep their lines), which one is open, the last 3 deleted notes, the window's place, size and folded state, the settings (text size, opacity, lock, open after login), and the minimap button's place and whether it is hidden.
 
 ## Licence
 

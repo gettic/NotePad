@@ -31,6 +31,7 @@ NP.Templates = {
     button      = "UIPanelButtonTemplate",
     input       = "InputBoxTemplate",
     check       = "UICheckButtonTemplate",
+    search      = "SearchBoxTemplate",
 }
 
 -- All art in one place: paths to Blizzard art that ships with the game (no bundled files).
@@ -70,6 +71,7 @@ NP.Art = {
     -- atlases (checked with C_Texture.GetAtlasInfo before use)
     settingsAtlas    = "questlog-icon-setting",              -- cog in the title bar
     cornerDouble     = "UI-Frame-Metal-CornerTopRightDouble", -- metal corner behind [v][X]
+    searchAtlas      = "common-search-magnifyingglass",      -- search button (SearchBoxTemplate's icon)
 }
 
 -- All colours in one place: Blizzard's named colours where they exist, else the same values.
@@ -102,6 +104,7 @@ NP.Color = {
     rowHover    = { 1, 1, 1, 0.1 },        -- checklist row highlight when the quest-log art is missing
     inputBg     = { 0, 0, 0, 0.5 },        -- checklist boxes without InputBoxTemplate
     inputBorder = { 0.45, 0.45, 0.45, 1 },
+    searchBg    = { 0.03, 0.03, 0.03, 0.97 }, -- search results over the text (must hide it)
 }
 NP.Color.hint = NP.Color.grey -- "Left-click: ..." lines in every tooltip
 NP.TICKED_ALPHA = 0.5 -- ticked checklist lines are dimmed (WoW text has no strike-through)
@@ -422,6 +425,36 @@ local function RepairSettings(s)
     end
 end
 
+-- Character notebooks (Beta B): db.chars["Name-Realm"] = { notes = {...}, current = n,
+-- deleted = {...}, use = true|false }. Each book is repaired like the account book; nothing
+-- that holds text is dropped (a book saved as plain text becomes a book with that note).
+local function RepairChars(db)
+    local src = db.chars
+    if src == nil then return end
+    if type(src) ~= "table" then
+        -- never written like this by Note Pad: keep any text as an account note
+        if (type(src) == "string" and src ~= "") or type(src) == "number" then
+            db.notes[#db.notes + 1] = { title = UniqueTitle(db.notes, "Recovered note"), text = tostring(src) }
+        end
+        db.chars = nil
+        return
+    end
+    local fixed = {}
+    for k, b in pairs(src) do
+        if type(b) == "string" or type(b) == "number" then b = { notes = b } end
+        if type(b) == "table" then
+            local key = tostring(k)
+            while fixed[key] do key = key .. "+" end -- a number key and the same text as a key
+            if not Finite(b.current) then b.current = 1 end
+            b.use = (b.use == true)
+            NormalizeNotes(b)
+            RepairDeleted(b)
+            fixed[key] = b
+        end
+    end
+    db.chars = next(fixed) and fixed or nil
+end
+
 -- Defaults + repair + migration on any table (the self-test runs it on a copy).
 function NP.RepairDB(db)
     ApplyDefaults(db, NP.defaults)
@@ -429,8 +462,98 @@ function NP.RepairDB(db)
     RepairSettings(db.settings)
     NP.MigrateDB(db)
     RepairDeleted(db)
+    RepairChars(db)
     db.dbVersion = NP.DB_VERSION
     return db
+end
+
+-- Notebooks ------------------------------------------------------------------------
+-- The account book is NotePadDB itself (notes, current, deleted: as before, so older versions
+-- still read it). A character's own book lives in NotePadDB.chars; `use` says which one this
+-- character has open. Every note list goes through NP.Book().
+
+-- "Name-Realm" of the logged-in character, or nil while the game doesn't know it yet.
+local function CharKey()
+    local name = UnitName and UnitName("player")
+    local realm = GetRealmName and GetRealmName()
+    if type(name) ~= "string" or name == "" or name == UNKNOWNOBJECT or name == "Unknown" then return nil end
+    if type(realm) ~= "string" or realm == "" then return nil end
+    return name .. "-" .. realm, name
+end
+
+function NP.UpdateCharKey()
+    NP.charKey, NP.charName = CharKey()
+    return NP.charKey
+end
+
+-- This character's book (create = make it if it isn't there), or nil.
+function NP.CharBook(create)
+    local db, key = NP.db, NP.charKey
+    if not db or not key then return nil end
+    local b = type(db.chars) == "table" and db.chars[key] or nil
+    if not b and create then
+        if type(db.chars) ~= "table" then db.chars = {} end
+        b = { notes = { { title = "Note 1", text = "" } }, current = 1, use = false }
+        db.chars[key] = b
+    end
+    return b
+end
+
+function NP.UsingCharBook()
+    local b = NP.CharBook()
+    return b ~= nil and b.use == true
+end
+
+-- The open notebook: { notes = {...}, current = n, deleted = {...} }.
+function NP.Book()
+    local b = NP.CharBook()
+    if b and b.use == true then return b end
+    return NP.db
+end
+
+-- The other notebook (account <-> this character), or nil if this character has none yet.
+function NP.OtherBook()
+    if NP.UsingCharBook() then return NP.db end
+    return NP.CharBook()
+end
+
+-- Which book holds `note` (nil if none).
+function NP.BookOf(note)
+    for _, b in ipairs({ NP.db, NP.CharBook() or false }) do
+        if b then
+            for _, n in ipairs(b.notes) do
+                if n == note then return b end
+            end
+        end
+    end
+end
+
+-- on = this character's own notes; off = the account notes (all characters).
+function NP.SetCharBook(on)
+    on = not not on
+    -- the name may have come after PLAYER_LOGIN: look again before refusing
+    if not NP.charKey and NP.UpdateCharKey() and NP.UsingCharBook() then
+        if NP.OnBookChanged then NP.OnBookChanged() end -- its notebook was in use: show it now
+    end
+    if NP.UsingCharBook() == on then return on end
+    if on and not NP.charKey then
+        NP.Print("The character's name isn't known yet. Try again in a moment.")
+        return false
+    end
+    -- everything open goes into the book it belongs to first
+    if NP.SaveText then NP.SaveText() end
+    if NP.FinishLineEdit then NP.FinishLineEdit(true) end
+    if NP.FinishRename then NP.FinishRename(true) end
+    local b = NP.CharBook(on)
+    if b then b.use = on end
+    if NP.OnBookChanged then NP.OnBookChanged() end
+    return on
+end
+
+-- "Account" or the character's name (menus, title, chat).
+function NP.BookName(book)
+    if book and book ~= NP.db then return NP.charName or "Character" end
+    return "Account"
 end
 
 -- Undo ---------------------------------------------------------------------------
@@ -447,7 +570,7 @@ local function NextSeq()
 end
 
 function NP.PushDeletedNote(note, pos)
-    local db = NP.db
+    local db = NP.Book() -- each notebook keeps its own deleted notes
     db.deleted = db.deleted or {}
     db.deleted[#db.deleted + 1] = { note = note, pos = pos, seq = NextSeq() }
     while #db.deleted > NP.UNDO_NOTES do table.remove(db.deleted, 1) end
@@ -461,22 +584,26 @@ function NP.PushRemovedLines(note, lines)
 end
 
 local function IndexOfNote(note)
-    for i, n in ipairs(NP.db.notes) do
+    for i, n in ipairs(NP.Book().notes) do
         if n == note then return i end
     end
 end
 
--- What /np undo would bring back: "note", entry | "lines", entry | nil.
+-- What /np undo would bring back in the open notebook: "note", entry | "lines", entry | nil.
 local function UndoTop()
-    -- line entries whose checklist is gone (deleted, or turned into a note) can't come back
-    while #lineUndo > 0 do
-        local e = lineUndo[#lineUndo]
-        if IndexOfNote(e.note) and NP.IsChecklist(e.note) then break end
-        table.remove(lineUndo)
+    -- line entries whose checklist is gone (deleted, or turned into a note) can't come back;
+    -- those of a checklist in the other notebook wait until it is open again
+    local l
+    for k = #lineUndo, 1, -1 do
+        local e = lineUndo[k]
+        if not NP.IsChecklist(e.note) or not NP.BookOf(e.note) then
+            table.remove(lineUndo, k)
+        elseif not l and IndexOfNote(e.note) then
+            l = e
+        end
     end
-    local deleted = NP.db.deleted
+    local deleted = NP.Book().deleted
     local d = deleted and deleted[#deleted]
-    local l = lineUndo[#lineUndo]
     if d and (not l or d.seq >= l.seq) then return "note", d end
     if l then return "lines", l end
     return nil
@@ -495,7 +622,7 @@ function NP.UndoLabel()
 end
 
 function NP.Undo()
-    local db = NP.db
+    local db = NP.Book()
     local kind, e = UndoTop()
     if not kind then
         NP.Print("Nothing to bring back.")
@@ -524,7 +651,9 @@ function NP.Undo()
         NP.Print("A checklist can have up to " .. NP.CHECKLIST_MAX_LINES .. " lines; \"" .. NP.GoldText(note.title) .. "\" is too full.")
         return false
     end
-    table.remove(lineUndo)
+    for k = #lineUndo, 1, -1 do
+        if lineUndo[k] == e then table.remove(lineUndo, k) break end
+    end
     for _, l in ipairs(e.lines) do -- ascending: each goes back to its old place
         table.insert(note.items, math.min(l.i, #note.items + 1), l.item)
     end
@@ -541,13 +670,18 @@ end
 function NP.InitDB()
     if type(NotePadDB) ~= "table" then NotePadDB = {} end
     NP.db = NP.RepairDB(NotePadDB)
-    for _, e in ipairs(NP.db.deleted or {}) do
-        if e.seq > undoSeq then undoSeq = e.seq end
+    NP.UpdateCharKey()
+    local books = { NP.db }
+    for _, b in pairs(NP.db.chars or {}) do books[#books + 1] = b end
+    for _, b in ipairs(books) do
+        for _, e in ipairs(b.deleted or {}) do
+            if e.seq > undoSeq then undoSeq = e.seq end
+        end
     end
 end
 
 function NP.CurrentNote()
-    local db = NP.db
+    local db = NP.Book()
     return db.notes[db.current] or db.notes[1]
 end
 
@@ -561,7 +695,7 @@ end
 function NP.FindNoteByName(text)
     local want = strlower(strtrim(tostring(text or "")))
     if want == "" then return nil end
-    local notes = NP.db.notes
+    local notes = NP.Book().notes
     for i, n in ipairs(notes) do
         if strlower(n.title or "") == want then return i end
     end
@@ -591,6 +725,14 @@ end
 
 local function OnOff(on) return on and "on" or "off" end
 
+function NP.PrintBook()
+    if NP.UsingCharBook() then
+        NP.Print("Notebook: " .. NP.GoldText(NP.BookName(NP.Book())) .. " (only this character). /np char goes back to the account notes.")
+    else
+        NP.Print("Notebook: " .. NP.GoldText("Account") .. " (all characters). /np char opens this character's own notes.")
+    end
+end
+
 local function PrintHelp()
     NP.Print("/np - open or close Note Pad")
     NP.Print("/np new - add a new note")
@@ -602,10 +744,12 @@ local function PrintHelp()
     NP.Print("/np opacity 80 - see-through window (" .. math.floor(NP.ALPHA_MIN * 100) .. " to 100); full while the mouse is on it")
     NP.Print("/np lock - lock or unlock the window's place and size")
     NP.Print("/np remember - open Note Pad after login if it was open")
+    NP.Print("/np char - switch between the account notes and this character's own notes")
+    NP.Print("/np find gold - search all notes (Ctrl+F in the text works too)")
     NP.Print("/np reset - put the window back in the middle")
     NP.Print("/np minimap - show or hide the minimap button")
     NP.Print("/np selftest - check the addon and show a line to copy")
-    NP.Print("Tabs: [+] adds a note. Double-click a tab to rename it, right-click for more. Ctrl+Tab switches notes.")
+    NP.Print("Tabs: [+] adds a note. Double-click a tab to rename it, right-click for more, drag it to move it. Ctrl+Tab switches notes.")
     NP.Print("To fold the window, double-click its title bar or right-click the minimap button. Right-click the title bar (or the cog) for settings.")
 end
 
@@ -626,8 +770,9 @@ local function HandleSlash(msg)
         if NP.SelfTest then NP.SelfTest:Start(cmd == "selftest full" and "full" or "quick") end
     elseif cmd:match("^%d+$") then
         local n = tonumber(cmd)
-        local count = #NP.db.notes
-        if NP.db.notes[n] then
+        local notes = NP.Book().notes
+        local count = #notes
+        if notes[n] then
             -- before and after opening, so nothing that runs while the window opens can switch it back
             NP.ShowNote(n)
             NP.OpenWindow()
@@ -689,6 +834,12 @@ local function HandleSlash(msg)
     elseif cmd == "remember" then
         local on = NP.SetRememberOpen(not NP.db.settings.rememberOpen)
         NP.Print("Open after login if it was open: " .. OnOff(on) .. ".")
+    elseif cmd == "char" then
+        local want = not NP.UsingCharBook()
+        if NP.SetCharBook(want) == want then NP.PrintBook() end
+    elseif word == "find" then
+        NP.OpenWindow()
+        if NP.OpenSearch then NP.OpenSearch(rawRest) end
     else
         -- not a command: the start of a note's name
         OpenByName(raw)
@@ -709,7 +860,16 @@ end
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("PLAYER_LOGOUT")
+events:RegisterEvent("PLAYER_LOGIN")
 events:SetScript("OnEvent", function(self, event, arg1)
+    if event == "PLAYER_LOGIN" then
+        self:UnregisterEvent("PLAYER_LOGIN")
+        -- the character's name wasn't known at ADDON_LOADED: find its notebook now
+        if NP.db and not NP.charKey and NP.UpdateCharKey() and NP.UsingCharBook() and NP.OnBookChanged then
+            NP.OnBookChanged()
+        end
+        return
+    end
     if event == "ADDON_LOADED" and arg1 == addonName then
         self:UnregisterEvent("ADDON_LOADED")
         NP.InitDB()

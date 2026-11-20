@@ -195,6 +195,20 @@ local function Generator(_, root)
     root:CreateCheckbox("Open after login if it was open",
         function() return NP.db.settings.rememberOpen end,
         function() NP.SetRememberOpen(not NP.db.settings.rememberOpen) end)
+    -- notebook: the account's notes (every character) or this character's own
+    -- a name that came late: look again (and show its notebook if it was in use)
+    if not NP.charKey and NP.UpdateCharKey and NP.UpdateCharKey() and NP.UsingCharBook() and NP.OnBookChanged then
+        NP.OnBookChanged()
+    end
+    if NP.charKey then
+        local nb = root:CreateButton("Notebook: " .. NP.BookName(NP.Book()))
+        nb:CreateRadio("Account (all characters)",
+            function() return not NP.UsingCharBook() end,
+            function() NP.SetCharBook(false) end, false)
+        nb:CreateRadio(NP.BookName(NP.CharBook() or {}) .. " (only this character)",
+            function() return NP.UsingCharBook() end,
+            function() NP.SetCharBook(true) end, true)
+    end
     if root.CreateDivider then root:CreateDivider() end
     root:CreateButton("Reset place and size", function() NP.ResetWindow() end)
 end
@@ -211,7 +225,7 @@ function NP.OpenSettingsMenu(owner)
             return true
         end
     end
-    NP.Print("Settings: /np size 14, /np opacity 80, /np lock, /np remember (/np help lists them all).")
+    NP.Print("Settings: /np size 14, /np opacity 80, /np lock, /np remember, /np char (/np help lists them all).")
     return false
 end
 
@@ -224,7 +238,8 @@ local function CogTooltip(self)
     GameTooltip:SetText("Settings")
     GameTooltip:AddLine(("Text size %d, opacity %d%%"):format(s.fontSize, Percent(s.alpha)), w[1], w[2], w[3])
     if s.locked then GameTooltip:AddLine("The window is locked.", w[1], w[2], w[3]) end
-    GameTooltip:AddLine("Click: text size, opacity, lock", h[1], h[2], h[3], true)
+    if NP.UsingCharBook() then GameTooltip:AddLine("Notebook: " .. NP.BookName(NP.Book()), w[1], w[2], w[3]) end
+    GameTooltip:AddLine("Click: text size, opacity, lock, notebook", h[1], h[2], h[3], true)
     GameTooltip:AddLine("Ctrl + mouse wheel over the text: text size", h[1], h[2], h[3], true)
     GameTooltip:AddLine("Right-click the title bar: this menu too", h[1], h[2], h[3], true)
     GameTooltip:Show()
