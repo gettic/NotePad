@@ -2,7 +2,7 @@
 
 A simple addon for **WoW Forever** to take notes. It opens a window with tabs, one note or checklist per tab. Whatever you type is saved. By default all your characters on the account see the same notes. You can also give each character its own notebook (see [Notebook for each character](#notebook-for-each-character)).
 
-Version 1.0.0-beta.4. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
+Version 1.0.0. Please report any problems you find in a [GitHub issue](https://github.com/gettic/NotePad/issues).
 
 - [Install](#install)
 - [Open and close](#open-and-close)

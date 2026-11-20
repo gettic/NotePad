@@ -2,7 +2,7 @@
 ## Title: Note Pad
 ## Notes: A simple window to take notes. /np or /notepad
 ## Author: Gettic
-## Version: 1.0.0-beta.4
+## Version: 1.0.0
 ## SavedVariables: NotePadDB
 ## IconTexture: Interface\Icons\INV_Misc_Note_01
 ## AddonCompartmentFunc: NotePad_ToggleFromCompartment
